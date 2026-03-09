@@ -1,0 +1,23 @@
+{
+  "name": "streamswap",
+  "version": "1.0.0",
+  "description": "Transfer playlists between Spotify, Apple Music, and other streaming platforms",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "apple-token": "node scripts/generate-apple-token.js"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "vite": "^5.0.0"
+  }
+}
