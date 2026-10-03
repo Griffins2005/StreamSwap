@@ -1,20 +1,21 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Nunito+Sans:wght@400;500;600;700&display=swap');
 
 :root {
-  --bg: #fafaf8;
-  --surface: rgba(0, 0, 0, 0.03);
-  --surface-hover: rgba(0, 0, 0, 0.06);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-light: rgba(0, 0, 0, 0.12);
-  --text: #1c1c1e;
-  --text-muted: rgba(0, 0, 0, 0.55);
-  --text-dim: rgba(0, 0, 0, 0.4);
-  --radius: 14px;
-  --radius-sm: 10px;
-  --font: 'Outfit', sans-serif;
-  --mono: 'JetBrains Mono', monospace;
-  --accent: #7C3AED;
-  --accent-soft: rgba(124, 58, 237, 0.12);
+  --bg: #f4efe6;
+  --surface: #fffdf8;
+  --surface-hover: #f7f1e8;
+  --border: #e6dccf;
+  --border-light: #d9cec0;
+  --text: #2c2824;
+  --text-muted: #6f675e;
+  --text-dim: #8a8176;
+  --radius: 16px;
+  --radius-sm: 12px;
+  --font: 'Nunito Sans', sans-serif;
+  --display: 'Fraunces', serif;
+  --mono: 'Nunito Sans', sans-serif;
+  --accent: #3e6b5e;
+  --accent-soft: rgba(62, 107, 94, 0.12);
 }
 
 * {
@@ -56,8 +57,8 @@ body {
 }
 
 @keyframes glow {
-  0%, 100% { box-shadow: 0 0 20px var(--glow-color, rgba(124, 58, 237, 0.2)); }
-  50% { box-shadow: 0 0 40px var(--glow-color, rgba(124, 58, 237, 0.35)); }
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 0 transparent; }
 }
 
 .fade-up { animation: fadeUp 0.4s ease both; }
@@ -77,8 +78,8 @@ body {
   transition: all 0.2s ease;
 }
 .card-hover:hover {
-  border-color: rgba(0, 0, 0, 0.12) !important;
-  background: rgba(0, 0, 0, 0.04) !important;
+  border-color: #cfc3b4 !important;
+  background: #fffdf8 !important;
 }
 
 .track-row:hover {
@@ -87,7 +88,7 @@ body {
 
 /* ── Responsive ── */
 @media (max-width: 640px) {
-  .platform-grid { grid-template-columns: repeat(3, 1fr) !important; }
+  .platform-grid { grid-template-columns: repeat(2, 1fr) !important; }
   .nav-buttons { flex-direction: column-reverse; }
   .nav-buttons button { width: 100%; }
   .track-header-row { display: none !important; }

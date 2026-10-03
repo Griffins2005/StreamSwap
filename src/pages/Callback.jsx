@@ -14,15 +14,14 @@ import { exchangeYouTubeCode } from '../lib/youtube';
 import { exchangeTidalCode } from '../lib/tidal';
 import { exchangeDeezerCode } from '../lib/deezer';
 
-// Shared theme for callback page (matches app milk-white + purple)
 const pageStyle = {
   minHeight: '100vh',
-  background: '#fafaf8',
+  background: '#f4efe6',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  fontFamily: "'Outfit', sans-serif",
-  color: '#1c1c1e',
+  fontFamily: "'Nunito Sans', sans-serif",
+  color: '#2c2824',
 };
 
 export default function Callback() {
@@ -89,8 +88,8 @@ export default function Callback() {
               style={{
                 width: 40,
                 height: 40,
-                border: '3px solid rgba(0,0,0,0.08)',
-                borderTopColor: '#7C3AED',
+                border: '3px solid #e6dccf',
+                borderTopColor: '#3e6b5e',
                 borderRadius: '50%',
                 animation: 'spin 0.8s linear infinite',
                 margin: '0 auto 20px',
@@ -100,9 +99,8 @@ export default function Callback() {
           </>
         ) : (
           <>
-            <div style={{ fontSize: 40, marginBottom: 16 }}>⚠️</div>
-            <p style={{ fontSize: 16, fontWeight: 600, color: '#ef4444' }}>{error}</p>
-            <p style={{ fontSize: 13, color: 'rgba(0,0,0,0.5)', marginTop: 8 }}>
+            <p style={{ fontSize: 18, fontWeight: 700, color: '#8d534c', fontFamily: "'Fraunces', serif" }}>{error}</p>
+            <p style={{ fontSize: 14, color: '#6f675e', marginTop: 8 }}>
               Redirecting back...
             </p>
           </>
