@@ -7,6 +7,16 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { fetchWithRetry } from './rateLimit';
+import { pickBestCandidate } from './matching';
+import {
+  consumeYouTubeSearch,
+  getYouTubeSearchBudget,
+  lookupYouTubeMatch,
+  markYouTubeSearchExhausted,
+  rememberYouTubeMatch,
+  YouTubeQuotaError,
+} from './youtubeQuota';
 
 const config = PLATFORMS.youtube;
 
@@ -178,14 +188,20 @@ async function youtubeFetch(endpoint, accessToken, params = {}) {
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   if (!url.searchParams.has('part')) url.searchParams.set('part', 'snippet');
 
-  const response = await fetch(url.toString(), {
+  const response = await fetchWithRetry(url.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
   if (response.status === 401) throw new Error('TOKEN_EXPIRED');
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `YouTube API error: ${response.status}`);
+    const msg = err.error?.message || `YouTube API error: ${response.status}`;
+    const reason = err.error?.errors?.[0]?.reason || '';
+    if (response.status === 403 && (/quota/i.test(msg) || /quota/i.test(reason))) {
+      markYouTubeSearchExhausted();
+      throw new YouTubeQuotaError();
+    }
+    throw new Error(msg);
   }
   return response.json();
 }
@@ -279,7 +295,7 @@ export async function getYouTubePlaylistTracks(accessToken, playlistId) {
 
 /** Create a new private playlist. Returns playlist id. */
 export async function createYouTubePlaylist(accessToken, name, description = '') {
-  const response = await fetch(
+  const response = await fetchWithRetry(
     `${config.apiBase}/playlists?part=snippet,status`,
     {
       method: 'POST',
@@ -304,6 +320,9 @@ export async function createYouTubePlaylist(accessToken, name, description = '')
         'YouTube API 401: Token expired or invalid. Sign out of YouTube in the app and sign in again, then retry the transfer.'
       );
     }
+    if (response.status === 403 && /quota/i.test(msg)) {
+      throw new YouTubeQuotaError('YOUTUBE_UNIT_QUOTA');
+    }
     if (response.status === 403) {
       throw new Error(
         `YouTube API 403: ${msg}. Enable "YouTube Data API v3" in Google Cloud Console (APIs & Services) and ensure your OAuth consent includes the youtube scope.`
@@ -318,7 +337,7 @@ export async function createYouTubePlaylist(accessToken, name, description = '')
 /** Add videos to a playlist (one request per video; API does not batch insert). */
 export async function addTracksToYouTubePlaylist(accessToken, playlistId, videoIds) {
   for (const videoId of videoIds) {
-    const response = await fetch(
+    const response = await fetchWithRetry(
       `${config.apiBase}/playlistItems?part=snippet`,
       {
         method: 'POST',
@@ -336,7 +355,9 @@ export async function addTracksToYouTubePlaylist(accessToken, playlistId, videoI
     );
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(err.error?.message || `Failed to add video ${videoId}`);
+      const msg = err.error?.message || `Failed to add video ${videoId}`;
+      if (response.status === 403 && /quota/i.test(msg)) throw new YouTubeQuotaError('YOUTUBE_UNIT_QUOTA');
+      throw new Error(msg);
     }
   }
 }
@@ -349,6 +370,11 @@ export async function searchYouTubeTrack(accessToken, title, artist) {
   const q = [title, artist].filter(Boolean).join(' ');
   if (!q.trim()) return null;
 
+  const cached = lookupYouTubeMatch(title, artist);
+  if (cached) return cached.miss ? null : cached;
+
+  if (getYouTubeSearchBudget().remaining <= 0) throw new YouTubeQuotaError();
+
   const data = await youtubeFetch('/search', accessToken, {
     part: 'snippet',
     q,
@@ -356,20 +382,24 @@ export async function searchYouTubeTrack(accessToken, title, artist) {
     maxResults: '5',
     videoCategoryId: '10', // Music
   });
+  consumeYouTubeSearch();
 
-  const items = data.items || [];
-  if (items.length === 0) return null;
+  const candidates = (data.items || [])
+    .map((item) => {
+      const videoId = item.id?.videoId;
+      if (!videoId) return null;
+      return {
+        id: videoId,
+        videoId,
+        title: item.snippet?.title || '',
+        artist: item.snippet?.channelTitle || '',
+        duration: 0,
+        isrc: null,
+      };
+    })
+    .filter(Boolean);
 
-  const first = items[0];
-  const videoId = first.id?.videoId;
-  if (!videoId) return null;
-
-  return {
-    id: videoId,
-    videoId,
-    title: first.snippet?.title || '',
-    artist: first.snippet?.channelTitle || '',
-    confidence: 0.85,
-    method: 'search',
-  };
+  const best = pickBestCandidate({ title, artist, duration: 0, isrc: null }, candidates);
+  rememberYouTubeMatch(title, artist, best);
+  return best;
 }
