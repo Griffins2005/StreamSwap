@@ -6,6 +6,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { fetchWithRetry } from './rateLimit';
+import { pickBestCandidate } from './matching';
 
 const config = PLATFORMS.tidal;
 
@@ -164,7 +166,7 @@ export function clearTidalAuthState() {
 
 async function tidalFetch(path, accessToken, options = {}) {
   const url = config.apiBase + path;
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     ...options,
     headers: {
       Accept: TIDAL_ACCEPT,
@@ -256,20 +258,24 @@ export async function createTidalPlaylist(accessToken, name, description = '') {
  */
 export async function addTracksToTidalPlaylist(accessToken, playlistId, trackIds) {
   if (!trackIds.length) return;
-  const body = {
-    data: trackIds.map((id) => ({ type: 'tracks', id: String(id) })),
-  };
-  await tidalFetch(`/playlists/${playlistId}/relationships/items`, accessToken, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  const BATCH = 50;
+  for (let i = 0; i < trackIds.length; i += BATCH) {
+    const chunk = trackIds.slice(i, i + BATCH);
+    const body = {
+      data: chunk.map((id) => ({ type: 'tracks', id: String(id) })),
+    };
+    await tidalFetch(`/playlists/${playlistId}/relationships/items`, accessToken, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
 }
 
 /**
  * Search Tidal catalog for a track. Returns first match or null.
  * @returns { id, title, artist, videoId (same as id), confidence, method } or null
  */
-export async function searchTidalTrack(accessToken, title, artist, isrc = null) {
+export async function searchTidalTrack(accessToken, title, artist, isrc = null, duration = 0) {
   const q = [title, artist].filter(Boolean).join(' ');
   if (!q.trim()) return null;
   const params = new URLSearchParams({ query: q, limit: '5' });
@@ -277,21 +283,18 @@ export async function searchTidalTrack(accessToken, title, artist, isrc = null) 
   const tracks = data.tracks?.items ?? data.items ?? data ?? [];
   if (!Array.isArray(tracks) || tracks.length === 0) return null;
 
-  if (isrc) {
-    const byIsrc = tracks.find((t) => (t.isrc || t.item?.isrc) === isrc);
-    if (byIsrc) {
-      const t = byIsrc.item ?? byIsrc;
-      return { id: t.id, videoId: t.id, title: t.title, artist: t.artist?.name ?? t.artist ?? '', confidence: 1, method: 'ISRC' };
-    }
-  }
+  const candidates = tracks.map((raw) => {
+    const t = raw.item ?? raw;
+    const artist = t.artist ?? t.artists?.[0];
+    return {
+      id: t.id,
+      videoId: t.id,
+      title: t.title ?? t.name ?? '',
+      artist: typeof artist === 'string' ? artist : (artist?.name ?? ''),
+      duration: t.duration ?? t.playbackSeconds ?? 0,
+      isrc: t.isrc ?? raw.isrc ?? null,
+    };
+  });
 
-  const t = tracks[0].item ?? tracks[0];
-  return {
-    id: t.id,
-    videoId: t.id,
-    title: t.title ?? t.name,
-    artist: typeof t.artist === 'string' ? t.artist : (t.artist?.name ?? ''),
-    confidence: 0.85,
-    method: 'search',
-  };
+  return pickBestCandidate({ title, artist, isrc, duration }, candidates);
 }

@@ -15,7 +15,8 @@
  * - Collapse whitespace
  */
 export function normalizeString(str) {
-  return str
+  if (str == null) return '';
+  return String(str)
     .toLowerCase()
     .replace(/\(feat\.?[^)]*\)/gi, '')
     .replace(/\(ft\.?[^)]*\)/gi, '')
@@ -140,6 +141,36 @@ export function matchTrack(track, catalog) {
 }
 
 /**
+ * Score a short list of search hits (typically 5) against one source track.
+ * Returns the best candidate with confidence and method, or null when nothing clears the fuzzy threshold.
+ */
+export function pickBestCandidate(sourceTrack, candidates) {
+  const catalog = (candidates || [])
+    .filter((c) => c && (c.title || c.artist))
+    .map((c, i) => ({
+      ...c,
+      id: c.id ?? `cand-${i}`,
+      title: c.title || '',
+      artist: c.artist || '',
+      duration: c.duration || 0,
+      isrc: c.isrc || null,
+    }));
+  if (catalog.length === 0) return null;
+
+  const result = matchTrack(
+    {
+      title: sourceTrack?.title || '',
+      artist: sourceTrack?.artist || '',
+      duration: sourceTrack?.duration || 0,
+      isrc: sourceTrack?.isrc || null,
+    },
+    catalog
+  );
+  if (!result.match || result.method === 'none') return null;
+  return { ...result.match, confidence: result.confidence, method: result.method };
+}
+
+/**
  * Match all tracks in a playlist against a destination catalog.
  * Returns a Map of trackId → matchResult.
  */
@@ -160,8 +191,9 @@ export function findDuplicates(playlists) {
   const duplicates = [];
 
   for (const playlist of playlists) {
-    for (const track of playlist.tracks) {
-      const key = normalizeString(`${track.title}|${track.artist}`);
+    for (const track of playlist.tracks || []) {
+      if (!track) continue;
+      const key = `${normalizeString(track.title)}\n${normalizeString(track.artist)}`;
 
       if (seen.has(key)) {
         duplicates.push({

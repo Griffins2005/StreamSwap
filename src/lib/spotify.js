@@ -7,6 +7,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { fetchWithRetry } from './rateLimit';
+import { pickBestCandidate } from './matching';
 
 const config = PLATFORMS.spotify;
 
@@ -179,7 +181,7 @@ export async function getValidSpotifyToken(tokenData) {
 /** Authenticated GET/POST to Spotify Web API. Throws TOKEN_EXPIRED on 401. */
 async function spotifyFetch(endpoint, accessToken, options = {}) {
   const url = endpoint.startsWith('http') ? endpoint : `${config.apiBase}${endpoint}`;
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     ...options,
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -313,7 +315,7 @@ export async function addTracksToSpotifyPlaylist(accessToken, playlistId, trackU
  * Find a track on Spotify by ISRC (best) or by title + artist search.
  * Returns { id, title, artist, uri, confidence, method: 'ISRC'|'search' } or null.
  */
-export async function searchSpotifyTrack(accessToken, title, artist, isrc = null) {
+export async function searchSpotifyTrack(accessToken, title, artist, isrc = null, duration = 0) {
   if (isrc) {
     try {
       const data = await spotifyFetch(
@@ -344,13 +346,15 @@ export async function searchSpotifyTrack(accessToken, title, artist, isrc = null
 
   if (data.tracks.items.length === 0) return null;
 
-  const t = data.tracks.items[0];
-  return {
+  const candidates = data.tracks.items.map((t) => ({
     id: t.id,
     title: t.name,
     artist: t.artists.map((a) => a.name).join(', '),
+    album: t.album?.name || '',
+    duration: Math.round((t.duration_ms || 0) / 1000),
+    isrc: t.external_ids?.isrc || null,
     uri: t.uri,
-    confidence: 0.85,
-    method: 'search',
-  };
+  }));
+
+  return pickBestCandidate({ title, artist, isrc, duration }, candidates);
 }

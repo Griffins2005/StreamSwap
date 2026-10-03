@@ -44,6 +44,12 @@ import {
   searchDeezerTrack,
 } from "./lib/deezer";
 import { parsePublicPlaylistUrl } from "./lib/publicPlaylist";
+import { findDuplicates } from "./lib/matching";
+import { parsePlaylistFile } from "./lib/import-export";
+import { useTransferHistory } from "./hooks/useTransferHistory";
+import { RateLimitError } from "./lib/rateLimit";
+import { getYouTubeSearchBudget } from "./lib/youtubeQuota";
+import { checkpointSignature, clearCheckpoint, loadCheckpoint, saveCheckpoint } from "./lib/transferCheckpoint";
 /* ─────────────────────────────────────────────
    CONSTANTS & CONFIG
    ───────────────────────────────────────────── */
@@ -115,45 +121,6 @@ const ICONS = {
     </svg>
   ),
 };
-
-// ── Song Matching Engine ──────────────────────────────
-function normalizeStr(s) {
-  return s
-    .toLowerCase()
-    .replace(/\(feat\.?.*?\)/gi, "")
-    .replace(/\[.*?\]/g, "")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function levenshtein(a, b) {
-  const m = a.length, n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
-  return dp[m][n];
-}
-
-// ── Duplicate Detection ──────────────────────────────
-function findDuplicates(playlists) {
-  const seen = new Map();
-  const dupes = [];
-  for (const pl of playlists) {
-    for (const t of pl.tracks) {
-      const key = normalizeStr(`${t.title}|${t.artist}`);
-      if (seen.has(key)) {
-        dupes.push({ track: t, playlist: pl.name, existsIn: seen.get(key) });
-      } else {
-        seen.set(key, pl.name);
-      }
-    }
-  }
-  return dupes;
-}
 
 // ── Format helpers ──────────────────────────────
 function fmtDuration(secs) {
@@ -367,7 +334,7 @@ function TrackRow({ track, matchResult, index, accentColor, showMatch }) {
         padding: "10px 14px",
         borderRadius: T.radiusSm,
         transition: "background 0.15s ease",
-        animation: `slideIn 0.2s ease ${index * 0.02}s both`,
+        animation: "none",
       }}
     >
       <span style={{ fontFamily: T.mono, fontSize: 11, color: T.textDim, textAlign: "right" }}>{index + 1}</span>
@@ -470,11 +437,8 @@ export default function PlaylistTransferPro() {
   const transferStep4RunRef = useRef(false);
   const [transferGoToStep5, setTransferGoToStep5] = useState(false);
 
-  // History (persistent)
-  const [history, setHistory] = useState([]);
-  const historyRef = useRef(history);
-  historyRef.current = history;
-  const [historyLoading, setHistoryLoading] = useState(true);
+  // History (localStorage, capped at 50)
+  const { history, addEntry, clearHistory } = useTransferHistory();
 
   // Import/Export
   const [importData, setImportData] = useState(null);
@@ -499,30 +463,27 @@ export default function PlaylistTransferPro() {
   const [publicImportLoading, setPublicImportLoading] = useState(false);
   const [publicImportError, setPublicImportError] = useState("");
 
-  // Load history from persistent storage
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await window.storage.get("transfer-history");
-        if (result?.value) setHistory(JSON.parse(result.value));
-      } catch (e) {}
-      setHistoryLoading(false);
-    })();
-  }, []);
-
-  // Save history
-  const saveHistory = async (h) => {
-    setHistory(h);
-    try { await window.storage.set("transfer-history", JSON.stringify(h)); } catch (e) {}
-  };
-
   // Show all platforms; those without credentials show an "unavailable" modal when clicked
   const availablePlatforms = useMemo(() => ["spotify", "youtube", "tidal", "deezer", "apple"], []);
 
   const accentColor = dest ? PLATFORMS[dest]?.color : source ? PLATFORMS[source]?.color : T.accent;
   const selectedPlaylists = playlists.filter((p) => selectedIds.includes(p.id));
   const totalTracks = selectedPlaylists.reduce((a, p) => a + ((p.tracks?.length > 0 ? p.tracks.length : null) ?? p.trackCount ?? 0), 0);
-  const duplicates = useMemo(() => findDuplicates(selectedPlaylists), [selectedPlaylists]);
+  const duplicates = useMemo(
+    () => findDuplicates(selectedPlaylists.map((p) => ({ ...p, tracks: p.tracks || [] }))),
+    [selectedPlaylists]
+  );
+  const transferResume = useMemo(() => {
+    if (!source || !dest || selectedIds.length === 0) return null;
+    const cp = loadCheckpoint();
+    if (!cp || cp.signature !== checkpointSignature(source, dest, selectedIds)) return null;
+    const done = Object.keys(cp.done || {}).length;
+    return done > 0 ? { done } : null;
+  }, [source, dest, selectedIds, step]);
+  const youtubeBudget = useMemo(
+    () => (dest === "youtube" ? getYouTubeSearchBudget() : null),
+    [dest, step]
+  );
 
   // Connect: redirect to OAuth when credentials exist; otherwise show unavailable modal
   const connectPlatform = (pid) => {
@@ -746,6 +707,49 @@ export default function PlaylistTransferPro() {
         setStep(3);
         return;
       }
+      const destTokenRef = { current: null };
+      let checkpoint = null;
+      let activeDestPlaylistId = null;
+      const pendingAdds = { spotify: [], youtube: [], tidal: [], deezer: [], keys: [] };
+      const allResults = {};
+      let writesSinceFlush = 0;
+      const publishResults = (force = false) => {
+        writesSinceFlush += 1;
+        if (force || writesSinceFlush >= 25) {
+          writesSinceFlush = 0;
+          setMatchResults({ ...allResults });
+          if (checkpoint) saveCheckpoint(checkpoint);
+        }
+      };
+      const flushPending = async () => {
+        const token = destTokenRef.current;
+        if (!checkpoint) return;
+        if (!token || !activeDestPlaylistId || pendingAdds.keys.length === 0) {
+          saveCheckpoint(checkpoint);
+          return;
+        }
+        if (dest === "youtube") {
+          while (pendingAdds.youtube.length) {
+            const videoId = pendingAdds.youtube[0];
+            const key = pendingAdds.keys[0];
+            await addTracksToYouTubePlaylist(token, activeDestPlaylistId, [videoId]);
+            checkpoint.done[key] = true;
+            pendingAdds.youtube.shift();
+            pendingAdds.keys.shift();
+            saveCheckpoint(checkpoint);
+          }
+          return;
+        }
+        if (dest === "spotify") await addTracksToSpotifyPlaylist(token, activeDestPlaylistId, pendingAdds.spotify);
+        else if (dest === "tidal") await addTracksToTidalPlaylist(token, activeDestPlaylistId, pendingAdds.tidal);
+        else if (dest === "deezer") await addTracksToDeezerPlaylist(token, activeDestPlaylistId, pendingAdds.deezer);
+        for (const key of pendingAdds.keys) checkpoint.done[key] = true;
+        pendingAdds.spotify = [];
+        pendingAdds.tidal = [];
+        pendingAdds.deezer = [];
+        pendingAdds.keys = [];
+        saveCheckpoint(checkpoint);
+      };
       try {
         setTransferLog((prev) => [...prev, { type: "header", text: `Creating playlists on ${PLATFORMS[dest].name}...` }]);
         setCurrentPlaylist("Loading source playlists...");
@@ -786,6 +790,7 @@ export default function PlaylistTransferPro() {
         const sourceToken = sourceTokenData?.accessToken;
         const destToken = destTokenData?.accessToken;
         let currentDestToken = destToken; // mutable so we can refresh on 401 mid-transfer
+        destTokenRef.current = currentDestToken;
         if (!destToken) {
           setTransferLog((prev) => [...prev, { type: "error", text: "Destination token missing. Connect the destination and retry." }]);
           setStep(3);
@@ -823,89 +828,145 @@ export default function PlaylistTransferPro() {
         }
         const total = playlistsWithTracks.reduce((a, p) => a + p.tracks.length, 0);
         if (total === 0) {
+          clearCheckpoint();
           setTransferLog((prev) => [...prev, { type: "done", text: "No tracks to transfer." }]);
           setMatchResults({});
           setLastTransferPlaylists(playlistsWithTracks);
           setStep(5);
           return;
         }
-        let processed = 0;
-        const allResults = {};
-        for (const pl of playlistsWithTracks) {
-          setCurrentPlaylist(pl.name);
-          setTransferLog((prev) => [...prev, { type: "header", text: `Creating playlist on ${PLATFORMS[dest].name}: "${pl.name}"` }]);
-          setCurrentTrack("Creating playlist...");
-          let destPlaylistId;
-          if (dest === "spotify") {
-            const profile = await getSpotifyUserProfile(currentDestToken);
-            destPlaylistId = await createSpotifyPlaylist(currentDestToken, profile.id, pl.name, "Transferred via StreamSwap");
-          } else if (dest === "youtube") {
-            try {
-              destPlaylistId = await createYouTubePlaylist(currentDestToken, pl.name, "Transferred via StreamSwap");
-            } catch (ytErr) {
-              const is401 = String(ytErr?.message || "").includes("401") || String(ytErr?.message || "").includes("Token expired") || String(ytErr?.message || "").includes("Sign out");
-              if (is401) {
-                const fresh = await getValidYouTubeToken(getToken("youtube"));
-                if (fresh) {
-                  setToken("youtube", fresh);
-                  currentDestToken = fresh.accessToken;
-                  destPlaylistId = await createYouTubePlaylist(currentDestToken, pl.name, "Transferred via StreamSwap");
-                } else throw ytErr;
-              } else throw ytErr;
-            }
-          } else if (dest === "tidal") {
-            destPlaylistId = await createTidalPlaylist(currentDestToken, pl.name, "Transferred via StreamSwap");
-          } else if (dest === "deezer") {
-            destPlaylistId = await createDeezerPlaylist(currentDestToken, pl.name, "Transferred via StreamSwap");
+        const signature = checkpointSignature(source, dest, playlistsWithTracks.map((p) => p.id));
+        const existingCheckpoint = loadCheckpoint();
+        if (existingCheckpoint?.signature === signature) {
+          checkpoint = existingCheckpoint;
+          checkpoint.done = checkpoint.done || {};
+          checkpoint.results = checkpoint.results || {};
+          checkpoint.destPlaylistIds = checkpoint.destPlaylistIds || {};
+          const resumed = Object.keys(checkpoint.done).length;
+          if (resumed > 0) {
+            setTransferLog((prev) => [...prev, { type: "header", text: `Resuming transfer (${resumed} tracks already saved).` }]);
           }
-          const spotifyUris = [];
-          const youtubeVideoIds = [];
-          const tidalTrackIds = [];
-          const deezerTrackIds = [];
-          for (let i = 0; i < (pl.tracks || []).length; i++) {
-            const track = pl.tracks[i];
+        } else {
+          checkpoint = { signature, source, dest, destPlaylistIds: {}, done: {}, results: {} };
+        }
+        Object.assign(allResults, checkpoint.results);
+        if (dest === "youtube") {
+          const budget = getYouTubeSearchBudget();
+          setTransferLog((prev) => [...prev, { type: "header", text: `YouTube searches left today: ${budget.remaining} of ${budget.limit}. Cached matches do not use a search.` }]);
+        }
+        let spotifyUserId = null;
+        if (dest === "spotify") {
+          const profile = await getSpotifyUserProfile(destTokenRef.current);
+          spotifyUserId = profile.id;
+        }
+        let processed = Object.keys(checkpoint.done).length;
+        setProgress(15 + Math.round((processed / total) * 85));
+        const trackKeyOf = (playlistId, track) => `${playlistId}:${track.id || track.videoId || track.title}`;
+        for (const pl of playlistsWithTracks) {
+          const tracks = pl.tracks || [];
+          const playlistDone = tracks.every((track) => checkpoint.done[trackKeyOf(pl.id, track)]);
+          if (playlistDone && checkpoint.destPlaylistIds[pl.id]) {
+            setTransferLog((prev) => [...prev, { type: "done", text: `✓ "${pl.name}" already transferred` }]);
+            continue;
+          }
+          setCurrentPlaylist(pl.name);
+          let destPlaylistId = checkpoint.destPlaylistIds[pl.id];
+          if (destPlaylistId) {
+            setTransferLog((prev) => [...prev, { type: "header", text: `Resuming "${pl.name}" on ${PLATFORMS[dest].name}` }]);
+          } else {
+            setTransferLog((prev) => [...prev, { type: "header", text: `Creating playlist on ${PLATFORMS[dest].name}: "${pl.name}"` }]);
+            setCurrentTrack("Creating playlist...");
+            if (dest === "spotify") {
+              destPlaylistId = await createSpotifyPlaylist(destTokenRef.current, spotifyUserId, pl.name, "Transferred via StreamSwap");
+            } else if (dest === "youtube") {
+              try {
+                destPlaylistId = await createYouTubePlaylist(destTokenRef.current, pl.name, "Transferred via StreamSwap");
+              } catch (ytErr) {
+                const is401 = String(ytErr?.message || "").includes("401") || String(ytErr?.message || "").includes("Token expired") || String(ytErr?.message || "").includes("Sign out");
+                if (is401) {
+                  const fresh = await getValidYouTubeToken(getToken("youtube"));
+                  if (fresh) {
+                    setToken("youtube", fresh);
+                    currentDestToken = fresh.accessToken;
+                    destTokenRef.current = currentDestToken;
+                    destPlaylistId = await createYouTubePlaylist(currentDestToken, pl.name, "Transferred via StreamSwap");
+                  } else throw ytErr;
+                } else throw ytErr;
+              }
+            } else if (dest === "tidal") {
+              destPlaylistId = await createTidalPlaylist(destTokenRef.current, pl.name, "Transferred via StreamSwap");
+            } else if (dest === "deezer") {
+              destPlaylistId = await createDeezerPlaylist(destTokenRef.current, pl.name, "Transferred via StreamSwap");
+            }
+            checkpoint.destPlaylistIds[pl.id] = destPlaylistId;
+            saveCheckpoint(checkpoint);
+          }
+          activeDestPlaylistId = destPlaylistId;
+          for (let i = 0; i < tracks.length; i++) {
+            const track = tracks[i];
+            const tid = track.id || track.videoId || track.title;
+            const key = trackKeyOf(pl.id, track);
+            if (checkpoint.done[key]) continue;
             setCurrentTrack(`${track.title} — ${track.artist}`);
             let match = null;
-            if (dest === "spotify") {
-              match = await searchSpotifyTrack(currentDestToken, track.title, track.artist, track.isrc || null);
-              if (match?.uri) spotifyUris.push(match.uri);
-            } else if (dest === "youtube") {
-              match = await searchYouTubeTrack(currentDestToken, track.title, track.artist);
-              if (match?.videoId) youtubeVideoIds.push(match.videoId);
-            } else if (dest === "tidal") {
-              match = await searchTidalTrack(currentDestToken, track.title, track.artist, track.isrc || null);
-              if (match?.id) tidalTrackIds.push(match.id);
-            } else if (dest === "deezer") {
-              match = await searchDeezerTrack(currentDestToken, track.title, track.artist);
-              if (match?.id) deezerTrackIds.push(match.id);
+            if (dest === "spotify") match = await searchSpotifyTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
+            else if (dest === "youtube") match = await searchYouTubeTrack(destTokenRef.current, track.title, track.artist);
+            else if (dest === "tidal") match = await searchTidalTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
+            else if (dest === "deezer") match = await searchDeezerTrack(destTokenRef.current, track.title, track.artist, track.duration || 0);
+            const confidence = match ? (match.confidence ?? 0) : 0;
+            const result = { confidence, method: match?.method || "none" };
+            allResults[tid] = result;
+            checkpoint.results[tid] = result;
+            const addedId = dest === "spotify" ? match?.uri : dest === "youtube" ? match?.videoId : match?.id;
+            if (addedId) {
+              pendingAdds[dest].push(addedId);
+              pendingAdds.keys.push(key);
+              if (pendingAdds.keys.length >= 50) await flushPending();
+            } else {
+              checkpoint.done[key] = true;
             }
-            const confidence = match ? (match.confidence ?? 0.85) : 0;
-            const tid = track.id || track.videoId || track.title;
-            allResults[tid] = { match: match ? { ...track } : null, confidence, method: match?.method || "none" };
             processed++;
             setProgress(15 + Math.round((processed / total) * 85));
-            setMatchResults((prev) => ({ ...prev, [tid]: { match: match ? { ...track } : null, confidence, method: match?.method || "none" } }));
-            if (i % 3 === 0) await new Promise((r) => setTimeout(r, 0));
+            publishResults(false);
+            if (i % 8 === 0) await new Promise((r) => setTimeout(r, 0));
           }
-          if (dest === "spotify" && spotifyUris.length > 0) await addTracksToSpotifyPlaylist(currentDestToken, destPlaylistId, spotifyUris);
-          if (dest === "youtube" && youtubeVideoIds.length > 0) await addTracksToYouTubePlaylist(currentDestToken, destPlaylistId, youtubeVideoIds);
-          if (dest === "tidal" && tidalTrackIds.length > 0) await addTracksToTidalPlaylist(currentDestToken, destPlaylistId, tidalTrackIds);
-          if (dest === "deezer" && deezerTrackIds.length > 0) await addTracksToDeezerPlaylist(currentDestToken, destPlaylistId, deezerTrackIds);
-          const exactCount = (pl.tracks || []).filter((t) => (allResults[t.id || t.videoId || t.title]?.confidence ?? 0) >= 0.85).length;
-          setTransferLog((prev) => [...prev, { type: "done", text: `✓ "${pl.name}" — ${exactCount}/${(pl.tracks || []).length} matched` }]);
+          await flushPending();
+          publishResults(true);
+          const exactCount = tracks.filter((t) => (allResults[t.id || t.videoId || t.title]?.confidence ?? 0) >= 0.85).length;
+          setTransferLog((prev) => [...prev, { type: "done", text: `✓ "${pl.name}" — ${exactCount}/${tracks.length} matched` }]);
         }
+        clearCheckpoint();
         setTransferLog((prev) => [...prev, { type: "done", text: "Transfer complete." }]);
         const exact = Object.values(allResults).filter((r) => r.confidence >= 0.85).length;
         const fuzzy = Object.values(allResults).filter((r) => r.confidence >= 0.6 && r.confidence < 0.85).length;
         const missing = Object.values(allResults).filter((r) => r.confidence < 0.6).length;
-        await saveHistory([{ id: `h-${Date.now()}`, date: new Date().toISOString(), source, dest, playlists: playlistsWithTracks.map((p) => p.name), totalTracks, exact, fuzzy, missing }, ...historyRef.current]);
-        setMatchResults(allResults);
+        addEntry({
+          source,
+          dest,
+          playlists: playlistsWithTracks.map((p) => p.name),
+          totalTracks: total,
+          exact,
+          fuzzy,
+          missing,
+        });
+        setMatchResults({ ...allResults });
         setLastTransferPlaylists(playlistsWithTracks);
         setStep(5);
         setShowViewOnPlatformModal(true);
       } catch (err) {
+        try { await flushPending(); } catch { /* keep the original error */ }
+        if (checkpoint) saveCheckpoint(checkpoint);
+        setMatchResults({ ...allResults });
         let msg = err?.message != null ? String(err.message) : String(err);
-        if (msg.startsWith("SPOTIFY_NEED_PERMISSION")) {
+        if (err instanceof RateLimitError || err?.name === "RateLimitError") {
+          const saved = Object.keys(checkpoint?.done || {}).length;
+          msg = `Rate limit reached. ${saved} tracks are saved. Start the transfer again to resume${err.retryAfterSec ? ` after about ${err.retryAfterSec}s` : ""}.`;
+        } else if (err?.name === "YouTubeQuotaError") {
+          const budget = getYouTubeSearchBudget();
+          msg = err.message === "YOUTUBE_UNIT_QUOTA"
+            ? "YouTube's daily unit quota is used up. Tracks already added were saved. Start again tomorrow to resume."
+            : `YouTube search limit reached (${budget.used} of ${budget.limit} today). Tracks already added were saved. Start again to resume; cached songs do not use another search.`;
+        } else if (msg.startsWith("SPOTIFY_NEED_PERMISSION")) {
           setShowSpotifyReconnectTip(true);
           msg = "Spotify needs permissions. Reconnect and allow.";
         } else if (msg.startsWith("TIDAL_NEED_PERMISSION")) {
@@ -923,7 +984,7 @@ export default function PlaylistTransferPro() {
     // Only real transfers: require both source and destination connected
     setTransferLog((prev) => [...prev, { type: "error", text: "Connect both source and destination to transfer. Only real transfers are supported." }]);
     setStep(3);
-  }, [source, dest, selectedPlaylists, publicImportPlaylist, getToken, setToken, isConnected]);
+  }, [source, dest, selectedPlaylists, publicImportPlaylist, getToken, setToken, isConnected, addEntry]);
 
   // Clear reconnect tips when leaving step 3 (e.g. user went back or changed flow).
   useEffect(() => {
@@ -990,24 +1051,9 @@ export default function PlaylistTransferPro() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
-        const text = ev.target.result;
-        if (file.name.endsWith(".json")) {
-          setImportData(JSON.parse(text));
-          setImportFormat("json");
-        } else {
-          // Parse CSV
-          const lines = text.split("\n").filter(Boolean);
-          const playlists = {};
-          for (let i = 1; i < lines.length; i++) {
-            const cols = lines[i].match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g)?.map((c) => c.replace(/^"|"$/g, ""));
-            if (!cols || cols.length < 4) continue;
-            const [plName, title, artist, album] = cols;
-            if (!playlists[plName]) playlists[plName] = { name: plName, tracks: [] };
-            playlists[plName].tracks.push({ title, artist, album });
-          }
-          setImportData(Object.values(playlists));
-          setImportFormat("csv");
-        }
+        const { format, playlists } = parsePlaylistFile(file.name, ev.target.result);
+        setImportData(playlists);
+        setImportFormat(format);
       } catch (err) {
         setImportData(null);
       }
@@ -1032,11 +1078,6 @@ export default function PlaylistTransferPro() {
     setPublicImportPlaylist(null);
     setPublicImportUrl("");
     setPublicImportError("");
-  };
-
-  const clearHistory = async () => {
-    setHistory([]);
-    try { await window.storage.delete("transfer-history"); } catch (e) {}
   };
 
   // Computed match stats for complete step
@@ -1292,6 +1333,18 @@ export default function PlaylistTransferPro() {
                 <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 20 }}>
                   Transferring {selectedIds.length} playlist{selectedIds.length > 1 ? "s" : ""} ({totalTracks} tracks) from <span style={{ color: PLATFORMS[source].color, fontWeight: 600 }}>{PLATFORMS[source].name}</span> → <span style={{ color: PLATFORMS[dest].color, fontWeight: 600 }}>{PLATFORMS[dest].name}</span>
                 </p>
+
+                {transferResume && (
+                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${accentColor}12`, border: `1px solid ${accentColor}33`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
+                    A transfer of this selection is paused. <strong>{transferResume.done}</strong> tracks are already saved. Start again to resume where it stopped.
+                  </div>
+                )}
+
+                {youtubeBudget && (
+                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.youtube.color}10`, border: `1px solid ${PLATFORMS.youtube.color}33`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
+                    YouTube searches left today: <strong>{youtubeBudget.remaining}</strong> of {youtubeBudget.limit}. Each uncached song uses one search. The transfer pauses when the daily limit is reached, and cached matches are reused for free.
+                  </div>
+                )}
 
                 {showSpotifyReconnectTip && dest === "spotify" && (
                   <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.spotify.color}12`, border: `1px solid ${PLATFORMS.spotify.color}30`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
@@ -1571,7 +1624,7 @@ export default function PlaylistTransferPro() {
                     opacity: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? 1 : 0.5,
                   }}
                 >
-                  {step === 3 ? `Start Transfer →` : step === 2 ? `Review ${selectedIds.length} Playlist${selectedIds.length !== 1 ? "s" : ""} →` : "Continue →"}
+                  {step === 3 ? (transferResume ? "Resume Transfer →" : "Start Transfer →") : step === 2 ? `Review ${selectedIds.length} Playlist${selectedIds.length !== 1 ? "s" : ""} →` : "Continue →"}
                 </button>
               </div>
             )}
@@ -1595,12 +1648,7 @@ export default function PlaylistTransferPro() {
               )}
             </div>
 
-            {historyLoading ? (
-              <div style={{ textAlign: "center", padding: 40, color: T.textDim }}>
-                <div style={{ width: 24, height: 24, border: `2px solid ${T.border}`, borderTopColor: accentColor, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 12px" }} />
-                Loading history...
-              </div>
-            ) : history.length === 0 ? (
+            {history.length === 0 ? (
               <div style={{ textAlign: "center", padding: 48, color: T.textDim }}>
                 <div style={{ fontSize: 40, marginBottom: 12 }}>📭</div>
                 <div style={{ fontSize: 14, fontWeight: 500 }}>No transfers yet</div>

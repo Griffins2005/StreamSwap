@@ -6,6 +6,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { fetchWithRetry } from './rateLimit';
+import { pickBestCandidate } from './matching';
 
 const config = PLATFORMS.deezer;
 
@@ -95,7 +97,7 @@ function deezerUrl(path, accessToken, extra = {}) {
 }
 
 async function deezerFetch(url, options = {}) {
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     ...options,
     headers: { ...options.headers },
   });
@@ -148,7 +150,7 @@ export async function getDeezerPublicPlaylist(playlistId) {
   let url = `${config.apiBase}/playlist/${id}`;
   let first = true;
   while (url) {
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url);
     if (!res.ok) throw new Error(await res.text().catch(() => 'Deezer playlist not found or not public'));
     const data = await res.json();
     if (data.error) throw new Error(data.error.message || 'Deezer API error');
@@ -208,7 +210,7 @@ export async function getDeezerPlaylistTracks(accessToken, playlistId) {
  */
 export async function createDeezerPlaylist(accessToken, name, description = '') {
   const url = deezerUrl('/user/me/playlists', accessToken);
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ title: name, description: description || 'Transferred via StreamSwap' }),
@@ -233,7 +235,7 @@ export async function addTracksToDeezerPlaylist(accessToken, playlistId, trackId
   const batch = trackIds.slice(0, 100);
   const songs = batch.join(',');
   const url = deezerUrl(`/playlist/${playlistId}/tracks`, accessToken);
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ songs }),
@@ -255,19 +257,19 @@ export async function addTracksToDeezerPlaylist(accessToken, playlistId, trackId
 /**
  * Search for a track by title + artist. Returns { id, title, artist, confidence, method } or null.
  */
-export async function searchDeezerTrack(accessToken, title, artist) {
+export async function searchDeezerTrack(accessToken, title, artist, duration = 0) {
   const q = [title, artist].filter(Boolean).join(' ');
   if (!q.trim()) return null;
   const data = await deezerFetch(deezerUrl('/search', accessToken, { q, limit: 5 }));
   const list = data.data || data || [];
-  if (list.length === 0) return null;
-  const first = list[0];
-  const artistName = first.artist?.name || '';
-  return {
-    id: String(first.id),
-    title: first.title || '',
-    artist: artistName,
-    confidence: 0.85,
-    method: 'search',
-  };
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const candidates = list.map((t) => ({
+    id: String(t.id),
+    title: t.title || '',
+    artist: t.artist?.name || '',
+    album: t.album?.title || '',
+    duration: t.duration || 0,
+    isrc: t.isrc || null,
+  }));
+  return pickBestCandidate({ title, artist, duration, isrc: null }, candidates);
 }
