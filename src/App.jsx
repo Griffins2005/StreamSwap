@@ -137,47 +137,47 @@ function fmtDate(d) {
    STYLES (CSS-in-JS theme object)
    ───────────────────────────────────────────── */
 const T = {
-  bg: "#fafaf8",
-  surface: "rgba(0,0,0,0.03)",
-  surfaceHover: "rgba(0,0,0,0.06)",
-  border: "rgba(0,0,0,0.08)",
-  borderLight: "rgba(0,0,0,0.12)",
-  text: "#1c1c1e",
-  textMuted: "rgba(0,0,0,0.55)",
-  textDim: "rgba(0,0,0,0.4)",
-  radius: 14,
-  radiusSm: 10,
-  font: "'Outfit', sans-serif",
-  mono: "'JetBrains Mono', monospace",
-  accent: "#7C3AED",
+  bg: "#f4efe6",
+  paper: "#fffdf8",
+  surface: "#fffdf8",
+  surfaceHover: "#f7f1e8",
+  border: "#e6dccf",
+  borderLight: "#d9cec0",
+  text: "#2c2824",
+  textMuted: "#6f675e",
+  textDim: "#8a8176",
+  radius: 16,
+  radiusSm: 12,
+  font: "'Nunito Sans', sans-serif",
+  display: "'Fraunces', serif",
+  mono: "'Nunito Sans', sans-serif",
+  accent: "#3e6b5e",
+  ok: "#3e6b5e",
+  warn: "#8a6840",
+  bad: "#8d534c",
 };
 
 const css = `
-  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Nunito+Sans:wght@400;500;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: ${T.bg}; }
-  ::-webkit-scrollbar { width: 6px; }
+  body { background: ${T.bg}; color: ${T.text}; }
+  ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  ::-webkit-scrollbar-thumb { background: #d9cec0; border-radius: 99px; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
   @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
-  @keyframes slideIn { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; transform: translateX(0); } }
-  @keyframes glow { 0%, 100% { box-shadow: 0 0 20px var(--glow-color, rgba(124,58,237,0.2)); } 50% { box-shadow: 0 0 40px var(--glow-color, rgba(124,58,237,0.35)); } }
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-  @keyframes scaleIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
-  .fade-up { animation: fadeUp 0.4s ease both; }
-  .stagger-1 { animation-delay: 0.05s; }
-  .stagger-2 { animation-delay: 0.1s; }
-  .stagger-3 { animation-delay: 0.15s; }
-  .stagger-4 { animation-delay: 0.2s; }
-  .btn-hover:hover { filter: brightness(0.97); transform: translateY(-1px); }
-  .card-hover:hover { border-color: rgba(0,0,0,0.12) !important; background: rgba(0,0,0,0.04) !important; }
-  .track-row:hover { background: rgba(0,0,0,0.03) !important; }
-  
+  .fade-up { animation: fadeUp 0.35s ease both; }
+  .btn-hover:hover:not(:disabled) { filter: brightness(1.05); }
+  .card-hover:hover { border-color: #cfc3b4 !important; background: #fffdf8 !important; }
+  .track-row:hover { background: #f7f1e8 !important; }
+  .step-title { font-family: ${T.display}; font-weight: 560; letter-spacing: -0.02em; font-size: 28px; line-height: 1.2; color: ${T.text}; }
+  input, button { font-family: ${T.font}; }
+  input:focus { outline: 2px solid rgba(62, 107, 94, 0.35); outline-offset: 1px; }
+
   @media (max-width: 640px) {
-    .platform-grid { grid-template-columns: repeat(3, 1fr) !important; }
+    .platform-grid { grid-template-columns: repeat(2, 1fr) !important; }
     .nav-buttons { flex-direction: column-reverse; }
     .nav-buttons button { width: 100%; }
     .track-header-row { display: none !important; }
@@ -185,7 +185,8 @@ const css = `
     .track-detail-row .col-album, .track-detail-row .col-dur { display: none; }
     .history-card { flex-direction: column !important; align-items: flex-start !important; }
     .stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
-    .header-row { flex-direction: column; gap: 12px !important; }
+    .header-row { flex-direction: column; align-items: flex-start !important; gap: 14px !important; }
+    .step-title { font-size: 24px; }
   }
 `;
 
@@ -206,11 +207,11 @@ function Chip({ children, active, color, onClick, style = {} }) {
       onClick={onClick}
       className="btn-hover"
       style={{
-        background: active ? `${color}20` : T.surface,
-        border: `1.5px solid ${active ? `${color}55` : T.border}`,
-        borderRadius: 20,
-        padding: "6px 14px",
-        color: active ? color : T.textMuted,
+        background: active ? T.surfaceHover : T.paper,
+        border: `1.5px solid ${active ? color : T.border}`,
+        borderRadius: 999,
+        padding: "7px 14px",
+        color: active ? T.text : T.textMuted,
         fontSize: 12,
         fontWeight: 600,
         fontFamily: T.font,
@@ -232,14 +233,13 @@ function Badge({ children, color }) {
         display: "inline-flex",
         alignItems: "center",
         padding: "2px 8px",
-        borderRadius: 6,
-        background: `${color}18`,
+        borderRadius: 999,
+        background: `${color}14`,
         color: color,
-        fontSize: 10,
+        fontSize: 11,
         fontWeight: 700,
-        fontFamily: T.mono,
-        letterSpacing: "0.04em",
-        textTransform: "uppercase",
+        fontFamily: T.font,
+        letterSpacing: "0.01em",
       }}
     >
       {children}
@@ -258,10 +258,11 @@ function PlatformCard({ id, selected, onClick, disabled, connected, onDisconnect
       onKeyDown={(e) => { if (!disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onClick(id); } }}
       className={`card-hover ${selected ? "" : ""}`}
       style={{
-        background: selected ? `linear-gradient(145deg, ${p.color}15, ${p.color}08)` : T.surface,
-        border: `2px solid ${selected ? p.color : T.border}`,
+        background: T.paper,
+        border: `1.5px solid ${selected ? T.accent : T.border}`,
+        boxShadow: selected ? "0 8px 24px rgba(62, 107, 94, 0.08)" : "0 1px 0 rgba(44, 40, 36, 0.03)",
         borderRadius: T.radius,
-        padding: "20px 14px",
+        padding: "18px 12px 16px",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -275,14 +276,12 @@ function PlatformCard({ id, selected, onClick, disabled, connected, onDisconnect
         width: "100%",
       }}
     >
-      {selected && (
-        <div style={{ position: "absolute", inset: 0, background: `radial-gradient(circle at 50% -20%, ${p.color}12, transparent 70%)`, pointerEvents: "none" }} />
-      )}
-      <div style={{ position: "relative", zIndex: 1 }}>{ICONS[id]}</div>
-      <span style={{ fontFamily: T.font, fontWeight: 600, fontSize: 12, letterSpacing: "0.01em", position: "relative", zIndex: 1 }}>{p.name}</span>
+      <div style={{ width: 28, height: 3, borderRadius: 99, background: p.color, position: "relative", zIndex: 1 }} />
+      <div style={{ position: "relative", zIndex: 1, color: selected ? T.text : T.textMuted }}>{ICONS[id]}</div>
+      <span style={{ fontFamily: T.font, fontWeight: 700, fontSize: 13, letterSpacing: "0.01em", position: "relative", zIndex: 1, color: T.text }}>{p.name}</span>
       {connected ? (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, position: "relative", zIndex: 1 }}>
-          <Badge color="#4ade80">Connected</Badge>
+          <Badge color={T.ok}>Connected</Badge>
           {canDisconnect && onDisconnect && (
             <button
               type="button"
@@ -299,7 +298,7 @@ function PlatformCard({ id, selected, onClick, disabled, connected, onDisconnect
                 textDecoration: "underline",
                 transition: "color 0.2s",
               }}
-              onMouseOver={(e) => { e.currentTarget.style.color = "#ef4444"; }}
+              onMouseOver={(e) => { e.currentTarget.style.color = T.bad; }}
               onMouseOut={(e) => { e.currentTarget.style.color = T.textDim; }}
               title="Remove authorization; you’ll need to sign in again to use this platform"
             >
@@ -311,7 +310,7 @@ function PlatformCard({ id, selected, onClick, disabled, connected, onDisconnect
         <span style={{ fontSize: 10, color: T.textDim, fontWeight: 500 }}>Sign in</span>
       ) : null}
       {selected && (
-        <div style={{ position: "absolute", top: 7, right: 7, width: 18, height: 18, borderRadius: "50%", background: p.color, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1 }}>
+        <div style={{ position: "absolute", top: 8, right: 8, width: 18, height: 18, borderRadius: "50%", background: T.accent, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1 }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5"><polyline points="20 6 9 17 4 12" /></svg>
         </div>
       )}
@@ -321,8 +320,8 @@ function PlatformCard({ id, selected, onClick, disabled, connected, onDisconnect
 
 function TrackRow({ track, matchResult, index, accentColor, showMatch }) {
   const conf = matchResult?.confidence ?? 0;
-  const confColor = conf >= 0.85 ? "#4ade80" : conf >= 0.6 ? "#fbbf24" : "#ef4444";
-  const confLabel = conf >= 0.85 ? "Exact" : conf >= 0.6 ? "Fuzzy" : "Missing";
+  const confColor = conf >= 0.85 ? T.ok : conf >= 0.6 ? T.warn : T.bad;
+  const confLabel = conf >= 0.85 ? "Found" : conf >= 0.6 ? "Close" : "Not found";
   return (
     <div
       className="track-row track-detail-row"
@@ -403,7 +402,7 @@ function ProgressRing({ progress, size = 48, stroke = 4, color }) {
   const offset = circ - (progress / 100) * circ;
   return (
     <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(0,0,0,0.08)" strokeWidth={stroke} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={T.border} strokeWidth={stroke} />
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset} style={{ transition: "stroke-dashoffset 0.4s ease" }} />
     </svg>
   );
@@ -466,7 +465,7 @@ export default function PlaylistTransferPro() {
   // Show all platforms; those without credentials show an "unavailable" modal when clicked
   const availablePlatforms = useMemo(() => ["spotify", "youtube", "tidal", "deezer", "apple"], []);
 
-  const accentColor = dest ? PLATFORMS[dest]?.color : source ? PLATFORMS[source]?.color : T.accent;
+  const accentColor = T.accent;
   const selectedPlaylists = playlists.filter((p) => selectedIds.includes(p.id));
   const totalTracks = selectedPlaylists.reduce((a, p) => a + ((p.tracks?.length > 0 ? p.tracks.length : null) ?? p.trackCount ?? 0), 0);
   const duplicates = useMemo(
@@ -1095,53 +1094,41 @@ export default function PlaylistTransferPro() {
     <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: T.font, position: "relative", overflow: "hidden" }}>
       <style>{css}</style>
 
-      {/* Ambient glow */}
-      <div style={{ position: "fixed", inset: 0, background: `radial-gradient(ellipse at 25% 15%, ${accentColor}18 0%, transparent 50%), radial-gradient(ellipse at 75% 85%, ${accentColor}0c 0%, transparent 50%)`, pointerEvents: "none", transition: "background 0.8s ease" }} />
-
-      <div style={{ maxWidth: 720, margin: "0 auto", padding: "32px 16px", position: "relative", zIndex: 1 }}>
+      <div style={{ maxWidth: 760, margin: "0 auto", padding: "36px 20px 64px", position: "relative", zIndex: 1 }}>
 
         {/* ── HEADER ── */}
-        <div className="header-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 32, gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 11, background: `linear-gradient(135deg, ${accentColor}, #6D28D9)`, display: "flex", alignItems: "center", justifyContent: "center", transition: "background 0.4s ease" }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5">
-                <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-              </svg>
-            </div>
-            <div>
-              <h1 style={{ fontFamily: T.mono, fontWeight: 700, fontSize: 18, letterSpacing: "-0.03em", lineHeight: 1.2 }}>StreamSwap</h1>
-              <p style={{ fontSize: 11, color: T.textDim, fontWeight: 500 }}>Move music between platforms</p>
-            </div>
+        <div className="header-row" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 36, gap: 16 }}>
+          <div>
+            <h1 style={{ fontFamily: T.display, fontWeight: 560, fontSize: 32, letterSpacing: "-0.03em", lineHeight: 1 }}>StreamSwap</h1>
+            <p style={{ fontSize: 14, color: T.textMuted, fontWeight: 500, marginTop: 6 }}>Move your playlists, quietly.</p>
           </div>
 
-          {/* Nav tabs */}
-          <div style={{ display: "flex", gap: 4, background: T.surface, borderRadius: 10, padding: 3, border: `1px solid ${T.border}` }}>
+          <nav style={{ display: "flex", gap: 6, background: T.paper, borderRadius: 999, padding: 4, border: `1px solid ${T.border}` }}>
             {[
-              { id: "transfer", label: "Transfer", icon: "↔" },
-              { id: "history", label: "History", icon: "⏱" },
-              { id: "import", label: "Import/Export", icon: "📁" },
+              { id: "transfer", label: "Transfer" },
+              { id: "history", label: "History" },
+              { id: "import", label: "Files" },
             ].map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => { setView(tab.id); if (tab.id === "transfer" && step > 5) reset(); }}
                 style={{
-                  background: view === tab.id ? `${accentColor}18` : "transparent",
-                  border: view === tab.id ? `1px solid ${accentColor}33` : "1px solid transparent",
-                  borderRadius: 8,
-                  padding: "7px 14px",
-                  color: view === tab.id ? accentColor : T.textMuted,
-                  fontSize: 12,
-                  fontWeight: 600,
+                  background: view === tab.id ? T.accent : "transparent",
+                  border: "none",
+                  borderRadius: 999,
+                  padding: "8px 16px",
+                  color: view === tab.id ? "#fffdf8" : T.textMuted,
+                  fontSize: 13,
+                  fontWeight: 700,
                   fontFamily: T.font,
                   cursor: "pointer",
-                  transition: "all 0.2s ease",
-                  whiteSpace: "nowrap",
+                  transition: "background 0.2s ease, color 0.2s ease",
                 }}
               >
-                {tab.icon} {tab.label}
+                {tab.label}
               </button>
             ))}
-          </div>
+          </nav>
         </div>
 
         {/* ═══════════════════════════════════════════
@@ -1149,31 +1136,25 @@ export default function PlaylistTransferPro() {
             ═══════════════════════════════════════════ */}
         {view === "transfer" && (
           <>
-            {/* Step indicator */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 32 }}>
-              {["Source", "Destination", "Playlists", "Review", "Transfer", "Done"].map((label, i) => (
-                <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <div style={{
-                    width: 26, height: 26, borderRadius: "50%",
-                    background: i < step ? accentColor : i === step ? `${accentColor}22` : T.surface,
-                    border: i === step ? `2px solid ${accentColor}` : i < step ? `2px solid ${accentColor}` : `2px solid ${T.border}`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 10, fontWeight: 700, fontFamily: T.mono,
-                    color: i < step ? "#fff" : i === step ? accentColor : T.textDim,
-                    transition: "all 0.3s ease",
-                  }}>
-                    {i < step ? "✓" : i + 1}
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 10 }} aria-hidden="true">
+                {["From", "To", "Choose", "Check", "Move", "Done"].map((label, i) => (
+                  <div key={label} style={{ flex: 1 }}>
+                    <div style={{ height: 3, borderRadius: 99, background: i <= step ? T.accent : T.border, transition: "background 0.3s ease" }} />
                   </div>
-                  {i < 5 && <div style={{ width: 20, height: 2, borderRadius: 1, background: i < step ? accentColor : T.border, transition: "all 0.3s ease" }} />}
-                </div>
-              ))}
+                ))}
+              </div>
+              <p style={{ fontSize: 12, color: T.textDim, fontWeight: 700, letterSpacing: "0.04em" }}>
+                {["From", "To", "Choose", "Check", "Move", "Done"][step] || "Done"}
+                {source && dest && step >= 1 ? `  ·  ${PLATFORMS[source]?.name} to ${PLATFORMS[dest]?.name}` : ""}
+              </p>
             </div>
 
             {/* ── STEP 0: Source ── */}
             {step === 0 && (
               <div className="fade-up">
-                <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Where are your playlists?</h2>
-                <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 20 }}>Select the source platform. Connect your account to fetch real playlists.</p>
+                <h2 className="step-title" style={{ marginBottom: 8 }}>Where does this music live?</h2>
+                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 22, lineHeight: 1.5 }}>Sign in to the service that has your playlists. You can also paste a public link below.</p>
                 <div className="platform-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(availablePlatforms.length, 5)}, 1fr)`, gap: 10 }}>
                   {availablePlatforms.map((id) => (
                     <PlatformCard
@@ -1188,11 +1169,11 @@ export default function PlaylistTransferPro() {
                 </div>
                 {source && !isConnected(source) && (source === "spotify" || source === "youtube" || source === "tidal" || source === "deezer") && (
                   <div className="fade-up" style={{ marginTop: 16, padding: "14px 16px", borderRadius: T.radiusSm, background: `${PLATFORMS[source].color}10`, border: `1px solid ${PLATFORMS[source].color}22`, fontSize: 13, color: T.textMuted }}>
-                    🔗 Click the {PLATFORMS[source].name} card above to sign in.
+                    Tap {PLATFORMS[source].name} above to sign in.
                   </div>
                 )}
                 <div className="fade-up" style={{ marginTop: 24, paddingTop: 20, borderTop: `1px solid ${T.border}` }}>
-                  <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 10 }}>Or paste a public playlist link (Spotify, YouTube, or Deezer) to copy it to another platform.</p>
+                  <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 10, lineHeight: 1.5 }}>Have a public link instead? Paste a Spotify, YouTube, or Deezer playlist.</p>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     <input
                       type="url"
@@ -1210,14 +1191,14 @@ export default function PlaylistTransferPro() {
                       disabled={publicImportLoading || !publicImportUrl.trim()}
                       style={{
                         padding: "10px 18px", borderRadius: T.radiusSm, border: "none", fontFamily: T.font, fontWeight: 600, fontSize: 13,
-                        background: (publicImportLoading || !publicImportUrl.trim()) ? T.border : `linear-gradient(135deg, ${accentColor}, #6D28D9)`,
+                        background: (publicImportLoading || !publicImportUrl.trim()) ? T.border : accentColor,
                         color: (publicImportLoading || !publicImportUrl.trim()) ? T.textDim : "#fff", cursor: (publicImportLoading || !publicImportUrl.trim()) ? "not-allowed" : "pointer",
                       }}
                     >
                       {publicImportLoading ? "Loading…" : "Load playlist"}
                     </button>
                   </div>
-                  {publicImportError && <p style={{ fontSize: 12, color: "#e74c3c", marginTop: 8 }}>{publicImportError}</p>}
+                  {publicImportError && <p style={{ fontSize: 12, color: T.bad, marginTop: 8 }}>{publicImportError}</p>}
                 </div>
               </div>
             )}
@@ -1225,8 +1206,8 @@ export default function PlaylistTransferPro() {
             {/* ── STEP 1: Destination ── */}
             {step === 1 && (
               <div className="fade-up">
-                <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Where should they go?</h2>
-                <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 20 }}>Choose the destination platform for your playlists.</p>
+                <h2 className="step-title" style={{ marginBottom: 8 }}>Where should it go?</h2>
+                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 22, lineHeight: 1.5 }}>Pick the service that should receive these playlists. The one you started from stays put.</p>
                 <div className="platform-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(availablePlatforms.length, 5)}, 1fr)`, gap: 10 }}>
                   {availablePlatforms.map((id) => (
                     <PlatformCard
@@ -1247,7 +1228,7 @@ export default function PlaylistTransferPro() {
             {step === 2 && (
               <div className="fade-up">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                  <h2 style={{ fontSize: 17, fontWeight: 700 }}>Select playlists</h2>
+                  <h2 className="step-title">Choose what to bring</h2>
                   <button onClick={() => setSelectedIds(selectedIds.length === playlists.length ? [] : playlists.map((p) => p.id))} style={{ background: "none", border: "none", color: accentColor, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
                     {selectedIds.length === playlists.length ? "Deselect all" : "Select all"}
                   </button>
@@ -1329,7 +1310,7 @@ export default function PlaylistTransferPro() {
             {/* ── STEP 3: Review (Duplicates + Confirmation) ── */}
             {step === 3 && (
               <div className="fade-up">
-                <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Review & Confirm</h2>
+                <h2 className="step-title" style={{ marginBottom: 8 }}>Take a last look</h2>
                 <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 20 }}>
                   Transferring {selectedIds.length} playlist{selectedIds.length > 1 ? "s" : ""} ({totalTracks} tracks) from <span style={{ color: PLATFORMS[source].color, fontWeight: 600 }}>{PLATFORMS[source].name}</span> → <span style={{ color: PLATFORMS[dest].color, fontWeight: 600 }}>{PLATFORMS[dest].name}</span>
                 </p>
@@ -1377,13 +1358,12 @@ export default function PlaylistTransferPro() {
                 {/* Summary cards */}
                 <div className="stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
                   {[
-                    { label: "Playlists", value: selectedIds.length, icon: "📋" },
-                    { label: "Total Tracks", value: totalTracks, icon: "🎵" },
-                    { label: "Duplicates Found", value: duplicates.length, icon: "🔄" },
+                    { label: "Playlists", value: selectedIds.length },
+                    { label: "Songs", value: totalTracks },
+                    { label: "Repeated", value: duplicates.length },
                   ].map((s) => (
-                    <div key={s.label} style={{ padding: "16px 14px", borderRadius: T.radiusSm, background: T.surface, border: `1px solid ${T.border}`, textAlign: "center" }}>
-                      <div style={{ fontSize: 20, marginBottom: 6 }}>{s.icon}</div>
-                      <div style={{ fontFamily: T.mono, fontSize: 22, fontWeight: 700, color: accentColor }}>{s.value}</div>
+                    <div key={s.label} style={{ padding: "16px 14px", borderRadius: T.radiusSm, background: T.paper, border: `1px solid ${T.border}`, textAlign: "center" }}>
+                      <div style={{ fontFamily: T.display, fontSize: 28, fontWeight: 560, color: T.text }}>{s.value}</div>
                       <div style={{ fontSize: 11, color: T.textDim, fontWeight: 500 }}>{s.label}</div>
                     </div>
                   ))}
@@ -1391,24 +1371,24 @@ export default function PlaylistTransferPro() {
 
                 {/* Duplicates section */}
                 {duplicates.length > 0 && (
-                  <div style={{ marginBottom: 20, padding: 16, borderRadius: T.radius, background: "rgba(251, 191, 36, 0.05)", border: "1px solid rgba(251, 191, 36, 0.15)" }}>
+                  <div style={{ marginBottom: 20, padding: 16, borderRadius: T.radius, background: "#fbf6ee", border: `1px solid ${T.border}` }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                       <div>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: "#fbbf24" }}>⚠ {duplicates.length} Duplicate Tracks</div>
-                        <div style={{ fontSize: 12, color: T.textMuted, marginTop: 2 }}>Tracks appearing in multiple selected playlists</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>{duplicates.length} songs show up more than once</div>
+                        <div style={{ fontSize: 13, color: T.textMuted, marginTop: 4, lineHeight: 1.45 }}>They appear in more than one playlist you selected.</div>
                       </div>
-                      <button onClick={() => setShowDuplicates(!showDuplicates)} style={{ background: "none", border: "none", color: "#fbbf24", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
+                      <button onClick={() => setShowDuplicates(!showDuplicates)} style={{ background: "none", border: "none", color: T.warn, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
                         {showDuplicates ? "Hide" : "Show"} details
                       </button>
                     </div>
 
                     <div style={{ display: "flex", gap: 6, marginBottom: showDuplicates ? 12 : 0 }}>
                       {[
-                        { id: "skip", label: "Skip duplicates" },
-                        { id: "keep", label: "Keep all copies" },
+                        { id: "skip", label: "Keep one copy" },
+                        { id: "keep", label: "Keep every copy" },
                         { id: "merge", label: "Merge into one" },
                       ].map((opt) => (
-                        <Chip key={opt.id} color="#fbbf24" active={dupAction === opt.id} onClick={() => setDupAction(opt.id)}>{opt.label}</Chip>
+                        <Chip key={opt.id} color={T.warn} active={dupAction === opt.id} onClick={() => setDupAction(opt.id)}>{opt.label}</Chip>
                       ))}
                     </div>
 
@@ -1446,7 +1426,7 @@ export default function PlaylistTransferPro() {
             {step === 4 && (
               <div className="fade-up">
                 <div style={{ textAlign: "center", marginBottom: 20 }}>
-                  <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Matching & transferring</h2>
+                  <h2 className="step-title" style={{ marginBottom: 8 }}>Moving your music</h2>
                   <p style={{ fontSize: 12, color: T.textMuted }}>{transferLog.length > 0 ? "Transfer in progress…" : "Starting…"}</p>
                 </div>
 
@@ -1497,7 +1477,7 @@ export default function PlaylistTransferPro() {
                 {/* Log */}
                 <div style={{ maxHeight: 160, overflowY: "auto", borderRadius: T.radiusSm, background: T.surface, padding: 12, border: `1px solid ${T.border}` }}>
                   {transferLog.map((log, i) => (
-                    <div key={i} style={{ fontSize: 11, fontFamily: T.mono, color: log.type === "done" ? "#4ade80" : log.type === "header" ? accentColor : log.type === "error" ? "#ef4444" : T.textMuted, padding: "3px 0", fontWeight: log.type === "header" ? 600 : 400 }}>
+                    <div key={i} style={{ fontSize: 11, fontFamily: T.mono, color: log.type === "done" ? T.ok : log.type === "header" ? accentColor : log.type === "error" ? T.bad : T.textMuted, padding: "3px 0", fontWeight: log.type === "header" ? 600 : 400 }}>
                       {log.text}
                     </div>
                   ))}
@@ -1510,7 +1490,7 @@ export default function PlaylistTransferPro() {
                       type="button"
                       onClick={() => setStep(5)}
                       className="btn-hover"
-                      style={{ background: `linear-gradient(135deg, ${accentColor}, #6D28D9)`, border: "none", borderRadius: T.radius, padding: "12px 24px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
+                      style={{ background: accentColor, border: "none", borderRadius: T.radius, padding: "12px 24px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
                     >
                       View results →
                     </button>
@@ -1526,7 +1506,7 @@ export default function PlaylistTransferPro() {
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={PLATFORMS[dest].color} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
                 </div>
 
-                <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Transfer Complete!</h2>
+                <h2 className="step-title" style={{ marginBottom: 8 }}>They’re home.</h2>
                 <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 24, lineHeight: 1.6 }}>
                   {selectedIds.length} playlist{selectedIds.length > 1 ? "s" : ""} moved from <span style={{ color: PLATFORMS[source].color, fontWeight: 600 }}>{PLATFORMS[source].name}</span> to <span style={{ color: PLATFORMS[dest].color, fontWeight: 600 }}>{PLATFORMS[dest].name}</span>
                 </p>
@@ -1535,9 +1515,9 @@ export default function PlaylistTransferPro() {
                 <div className="stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 24, maxWidth: 480, margin: "0 auto 24px" }}>
                   {[
                     { label: "Total", value: matchStats.total, color: T.text },
-                    { label: "Exact Match", value: matchStats.exact, color: "#4ade80" },
-                    { label: "Fuzzy Match", value: matchStats.fuzzy, color: "#fbbf24" },
-                    { label: "Not Found", value: matchStats.missing, color: "#ef4444" },
+                    { label: "Found", value: matchStats.exact, color: T.ok },
+                    { label: "Close match", value: matchStats.fuzzy, color: T.warn },
+                    { label: "Not found", value: matchStats.missing, color: T.bad },
                   ].map((s) => (
                     <div key={s.label} style={{ padding: "14px 8px", borderRadius: T.radiusSm, background: T.surface, border: `1px solid ${T.border}` }}>
                       <div style={{ fontFamily: T.mono, fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
@@ -1566,9 +1546,9 @@ export default function PlaylistTransferPro() {
                             <div style={{ fontSize: 13, fontWeight: 600 }}>{pl.name}</div>
                           </div>
                           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                            <Badge color="#4ade80">{exact}</Badge>
-                            {fuzzy > 0 && <Badge color="#fbbf24">{fuzzy}</Badge>}
-                            {missing > 0 && <Badge color="#ef4444">{missing}</Badge>}
+                            <Badge color={T.ok}>{exact}</Badge>
+                            {fuzzy > 0 && <Badge color={T.warn}>{fuzzy}</Badge>}
+                            {missing > 0 && <Badge color={T.bad}>{missing}</Badge>}
                           </div>
                           <span style={{ color: T.textDim, fontSize: 16, transition: "transform 0.2s", transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
                         </div>
@@ -1615,7 +1595,7 @@ export default function PlaylistTransferPro() {
                   disabled={step === 0 ? !source : step === 1 ? !dest : step === 2 ? selectedIds.length === 0 : false}
                   className="btn-hover"
                   style={{
-                    background: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? `linear-gradient(135deg, ${accentColor}, #6D28D9)` : T.surface,
+                    background: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? accentColor : T.surface,
                     border: "none", borderRadius: T.radius, padding: "12px 28px",
                     color: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? "#fff" : T.textDim,
                     fontSize: 13, fontWeight: 700, cursor: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? "pointer" : "not-allowed",
@@ -1638,11 +1618,11 @@ export default function PlaylistTransferPro() {
           <div className="fade-up">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <div>
-                <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>Transfer History</h2>
-                <p style={{ fontSize: 12, color: T.textMuted }}>{history.length} past transfer{history.length !== 1 ? "s" : ""} saved</p>
+                <h2 className="step-title" style={{ marginBottom: 4 }}>What you’ve moved</h2>
+                <p style={{ fontSize: 14, color: T.textMuted }}>{history.length === 0 ? "Nothing saved yet" : `${history.length} transfer${history.length === 1 ? "" : "s"} saved`}</p>
               </div>
               {history.length > 0 && (
-                <button onClick={clearHistory} style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "6px 14px", color: "#ef4444", fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: T.font }}>
+                <button onClick={clearHistory} style={{ background: T.paper, border: `1px solid ${T.border}`, borderRadius: 999, padding: "7px 14px", color: T.bad, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}>
                   Clear All
                 </button>
               )}
@@ -1650,9 +1630,8 @@ export default function PlaylistTransferPro() {
 
             {history.length === 0 ? (
               <div style={{ textAlign: "center", padding: 48, color: T.textDim }}>
-                <div style={{ fontSize: 40, marginBottom: 12 }}>📭</div>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>No transfers yet</div>
-                <div style={{ fontSize: 12, marginTop: 4 }}>Your transfer history will appear here</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: T.text }}>Nothing moved yet</div>
+                <div style={{ fontSize: 14, marginTop: 6, lineHeight: 1.5 }}>When you finish a transfer, it will wait here so you can look back.</div>
                 <button onClick={() => setView("transfer")} className="btn-hover" style={{ marginTop: 16, background: `${accentColor}15`, border: `1px solid ${accentColor}33`, borderRadius: T.radiusSm, padding: "10px 24px", color: accentColor, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font }}>
                   Start a Transfer
                 </button>
@@ -1673,9 +1652,9 @@ export default function PlaylistTransferPro() {
                       </div>
                     </div>
                     <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                      <Badge color="#4ade80">{h.exact} exact</Badge>
-                      {h.fuzzy > 0 && <Badge color="#fbbf24">{h.fuzzy} fuzzy</Badge>}
-                      {h.missing > 0 && <Badge color="#ef4444">{h.missing} missing</Badge>}
+                      <Badge color={T.ok}>{h.exact} found</Badge>
+                      {h.fuzzy > 0 && <Badge color={T.warn}>{h.fuzzy} close</Badge>}
+                      {h.missing > 0 && <Badge color={T.bad}>{h.missing} missing</Badge>}
                     </div>
                   </div>
                 ))}
@@ -1689,12 +1668,12 @@ export default function PlaylistTransferPro() {
             ═══════════════════════════════════════════ */}
         {view === "import" && (
           <div className="fade-up">
-            <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Import & Export</h2>
+            <h2 className="step-title" style={{ marginBottom: 8 }}>Bring a file, or take one with you</h2>
             <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 24 }}>Backup, share, or migrate playlists using JSON or CSV files</p>
 
             {/* Export */}
             <div style={{ padding: 20, borderRadius: T.radius, background: T.surface, border: `1px solid ${T.border}`, marginBottom: 16 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>📤 Export Playlists</div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Save a copy</div>
               <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 14 }}>Download your playlists as a portable file format. Load playlists in Transfer first (connect a source and select playlists).</p>
               {playlists.length === 0 ? (
                 <p style={{ fontSize: 12, color: T.textDim, padding: "12px 0" }}>No playlists loaded. Go to Transfer → choose a source and load playlists, then return here to export.</p>
@@ -1712,17 +1691,17 @@ export default function PlaylistTransferPro() {
 
             {/* Import */}
             <div style={{ padding: 20, borderRadius: T.radius, background: T.surface, border: `1px solid ${T.border}` }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>📥 Import Playlists</div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Open a file</div>
               <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 14 }}>Upload a JSON or CSV file to import playlists into any platform</p>
               <input ref={fileInputRef} type="file" accept=".json,.csv" onChange={handleImport} style={{ display: "none" }} />
               <button onClick={() => fileInputRef.current?.click()} className="btn-hover" style={{ background: T.surfaceHover, border: `2px dashed ${T.borderLight}`, borderRadius: T.radiusSm, padding: "24px 20px", color: T.textMuted, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font, width: "100%", transition: "all 0.2s ease" }}>
-                📂 Click to choose a file (.json or .csv)
+                Choose a JSON or CSV file
               </button>
 
               {importData && (
                 <div className="fade-up" style={{ marginTop: 16 }}>
                   <div style={{ padding: "12px 16px", borderRadius: T.radiusSm, background: `${accentColor}0a`, border: `1px solid ${accentColor}1a` }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#4ade80", marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: T.ok, marginBottom: 8 }}>
                       ✓ Loaded {importData.length} playlist{importData.length > 1 ? "s" : ""} from {importFormat.toUpperCase()}
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1736,7 +1715,7 @@ export default function PlaylistTransferPro() {
                     <button
                       onClick={() => { setView("transfer"); setStep(1); setSource(availablePlatforms[0] || "spotify"); }}
                       className="btn-hover"
-                      style={{ marginTop: 12, background: `linear-gradient(135deg, ${accentColor}, #6D28D9)`, border: "none", borderRadius: T.radiusSm, padding: "10px 24px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
+                      style={{ marginTop: 12, background: accentColor, border: "none", borderRadius: T.radiusSm, padding: "10px 24px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
                     >
                       Transfer Imported Playlists →
                     </button>
@@ -1762,7 +1741,7 @@ export default function PlaylistTransferPro() {
 
         {/* Footer */}
         <div style={{ marginTop: 40, textAlign: "center", fontSize: 11, color: T.textDim, lineHeight: 1.6, paddingBottom: 24 }}>
-          Connect your music accounts to move playlists between services.
+          Your accounts stay signed in on this device. Nothing is stored on a StreamSwap server.
         </div>
       </div>
 
