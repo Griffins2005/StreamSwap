@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { forgetPlatform } from './tokenStore';
 import { fetchWithRetry } from './rateLimit';
 import { pickBestCandidate } from './matching';
 
@@ -42,24 +43,19 @@ function base64urlencode(buffer) {
 const SPOTIFY_VERIFIER_KEY = 'spotify_code_verifier';
 
 /**
- * Clear all Spotify auth data from sessionStorage so the next connect is a fresh flow.
- * Call this before "Reconnect" so Spotify is forced to show the consent screen again.
+ * Clear Spotify auth data so the next connect is a fresh flow.
+ * Call this before "Reconnect" when Spotify itself rejected the saved sign-in.
  */
 export function clearSpotifyAuthState() {
   try {
     sessionStorage.removeItem(SPOTIFY_VERIFIER_KEY);
-    const raw = sessionStorage.getItem('streamswap_tokens');
-    if (raw) {
-      const data = JSON.parse(raw);
-      delete data.spotify;
-      sessionStorage.setItem('streamswap_tokens', JSON.stringify(data));
-    }
+    forgetPlatform('spotify');
   } catch (_) {}
 }
 
 /**
  * Start Spotify OAuth: generate PKCE challenge, store verifier, redirect to Spotify.
- * Always clears any old verifier first, uses show_dialog so user sees consent again.
+ * Returning visitors are not sent here again. Spotify is not asked to show the approval screen every time.
  * User signs in and is redirected to /callback/spotify?code=...
  */
 export async function initiateSpotifyAuth() {
@@ -86,7 +82,6 @@ export async function initiateSpotifyAuth() {
     code_challenge_method: 'S256',
     code_challenge: codeChallenge,
     state,
-    show_dialog: 'true',
   });
 
   window.location.href = `${config.authUrl}?${params.toString()}`;

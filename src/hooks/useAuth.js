@@ -1,34 +1,19 @@
-// ══════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
 // Auth State Hook
-// ══════════════════════════════════════════════
-// Manages OAuth tokens for connected platforms.
+// ══════════════════════════════════════════════════════════════════════════════
+// Remembers OAuth tokens on this browser. A refresh token still counts as
+// signed in after the short-lived access token expires.
 
 import { useState, useCallback } from 'react';
-
-const TOKEN_KEY = 'streamswap_tokens';
-
-function loadTokens() {
-  try {
-    const raw = sessionStorage.getItem(TOKEN_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveTokens(tokens) {
-  try {
-    sessionStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
-  } catch {}
-}
+import { readTokens, writeTokens } from '../lib/tokenStore';
 
 export function useAuth() {
-  const [tokens, setTokens] = useState(loadTokens);
+  const [tokens, setTokens] = useState(readTokens);
 
   const setToken = useCallback((platform, tokenData) => {
     setTokens((prev) => {
       const updated = { ...prev, [platform]: tokenData };
-      saveTokens(updated);
+      writeTokens(updated);
       return updated;
     });
   }, []);
@@ -38,7 +23,6 @@ export function useAuth() {
       const data = tokens[platform];
       if (!data) return null;
 
-      // Check if expired
       if (data.expiresAt && Date.now() > data.expiresAt) {
         return { ...data, expired: true };
       }
@@ -51,7 +35,8 @@ export function useAuth() {
   const isConnected = useCallback(
     (platform) => {
       const data = tokens[platform];
-      if (!data) return false;
+      if (!data?.accessToken && !data?.refreshToken) return false;
+      if (data.refreshToken) return true;
       if (data.expiresAt && Date.now() > data.expiresAt) return false;
       return true;
     },
@@ -62,16 +47,14 @@ export function useAuth() {
     setTokens((prev) => {
       const updated = { ...prev };
       delete updated[platform];
-      saveTokens(updated);
+      writeTokens(updated);
       return updated;
     });
   }, []);
 
   const disconnectAll = useCallback(() => {
     setTokens({});
-    try {
-      sessionStorage.removeItem(TOKEN_KEY);
-    } catch {}
+    writeTokens({});
   }, []);
 
   return { tokens, setToken, getToken, isConnected, disconnect, disconnectAll };

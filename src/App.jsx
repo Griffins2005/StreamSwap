@@ -1457,7 +1457,7 @@ export default function PlaylistTransferPro() {
             {step === 0 && (
               <div className="fade-up">
                 <h2 className="step-title" style={{ marginBottom: 8 }}>Where does this music live?</h2>
-                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 22, lineHeight: 1.5 }}>Sign in to the service that has your playlists. You can also paste a public link below.</p>
+                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 22, lineHeight: 1.5 }}>Sign in once. This browser remembers it, so the next visit can go straight to your playlists. You can also paste a public link below.</p>
                 <div className="platform-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(availablePlatforms.length, 5)}, 1fr)`, gap: 10 }}>
                   {availablePlatforms.map((id) => (
                     <PlatformCard

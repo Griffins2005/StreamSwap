@@ -6,6 +6,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { forgetPlatform } from './tokenStore';
 import { fetchWithRetry } from './rateLimit';
 import { pickBestCandidate } from './matching';
 
@@ -155,12 +156,7 @@ export const TIDAL_NEED_PERMISSION = 'TIDAL_NEED_PERMISSION';
 export function clearTidalAuthState() {
   sessionStorage.removeItem('tidal_code_verifier');
   try {
-    const raw = sessionStorage.getItem('streamswap_tokens');
-    if (raw) {
-      const data = JSON.parse(raw);
-      delete data.tidal;
-      sessionStorage.setItem('streamswap_tokens', JSON.stringify(data));
-    }
+    forgetPlatform('tidal');
   } catch (_) {}
 }
 

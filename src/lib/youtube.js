@@ -7,6 +7,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { PLATFORMS } from './platforms';
+import { readTokens } from './tokenStore';
 import { fetchWithRetry } from './rateLimit';
 import { pickBestCandidate } from './matching';
 import {
@@ -83,8 +84,8 @@ export async function initiateYouTubeAuth() {
     response_type: 'code',
     scope: config.scopes.join(' '),
     access_type: 'offline',
-    prompt: 'consent',
   });
+  if (!readTokens().youtube?.refreshToken) params.set('prompt', 'consent');
 
   if (config.clientSecret) {
     // Confidential client: no PKCE

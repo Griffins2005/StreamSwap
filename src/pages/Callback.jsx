@@ -4,7 +4,7 @@
 // Route: /callback/:platform (e.g. /callback/spotify, /callback/youtube)
 // After user authorizes on Spotify or Google, they are redirected here with ?code=...
 // This page exchanges the code for tokens (using PKCE verifier from sessionStorage),
-// stores tokens in sessionStorage under key streamswap_tokens, then redirects to /.
+// stores tokens on this browser, then redirects to /.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { useEffect, useState, useRef } from 'react';
@@ -13,6 +13,7 @@ import { exchangeSpotifyCode } from '../lib/spotify';
 import { exchangeYouTubeCode } from '../lib/youtube';
 import { exchangeTidalCode } from '../lib/tidal';
 import { exchangeDeezerCode } from '../lib/deezer';
+import { readTokens, writeTokens } from '../lib/tokenStore';
 
 const pageStyle = {
   minHeight: '100vh',
@@ -64,9 +65,9 @@ export default function Callback() {
         else throw new Error(`Unsupported platform: ${platform}`);
 
         // Persist tokens for useAuth() in App (same key)
-        const existing = JSON.parse(sessionStorage.getItem('streamswap_tokens') || '{}');
+        const existing = readTokens();
         existing[platform] = tokenData;
-        sessionStorage.setItem('streamswap_tokens', JSON.stringify(existing));
+        writeTokens(existing);
 
         setStatus(`Connected to ${platformLabel}! Redirecting...`);
         setTimeout(() => navigate('/'), 500);
