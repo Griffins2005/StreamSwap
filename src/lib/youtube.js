@@ -41,6 +41,31 @@ function base64urlencode(buffer) {
     .replace(/=+$/, '');
 }
 
+function tokenFromGoogle(data, fallbackRefresh = null) {
+  const expiresIn = data.expires_in || 3600;
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token || fallbackRefresh || null,
+    expiresAt: Date.now() + expiresIn * 1000,
+  };
+}
+
+/** Production keeps the Google secret in /api/youtube-token. Local dev still exchanges in the browser. */
+async function requestServerToken(payload) {
+  const response = await fetch('/api/youtube-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data.error_description || data.error;
+    throw new Error(detail ? `YouTube sign-in failed: ${detail}` : `YouTube sign-in failed (${response.status})`);
+  }
+  if (!data.access_token) throw new Error('YouTube sign-in did not return a token.');
+  return data;
+}
+
 // ─── Auth flow ────────────────────────────────────────────────────────────────
 
 /**
@@ -80,6 +105,17 @@ export async function initiateYouTubeAuth() {
  */
 export async function exchangeYouTubeCode(code) {
   const redirectUri = (config.redirectUri || '').trim();
+  if (import.meta.env.PROD) {
+    const codeVerifier = sessionStorage.getItem('youtube_code_verifier');
+    const data = await requestServerToken({
+      code: (code || '').trim(),
+      code_verifier: codeVerifier || undefined,
+      redirect_uri: redirectUri,
+    });
+    sessionStorage.removeItem('youtube_code_verifier');
+    return tokenFromGoogle(data);
+  }
+
   const body = new URLSearchParams({
     client_id: (config.clientId || '').trim(),
     code: (code || '').trim(),
@@ -134,6 +170,17 @@ export async function exchangeYouTubeCode(code) {
  */
 export async function refreshYouTubeToken(refreshToken) {
   if (!refreshToken) return null;
+  if (import.meta.env.PROD) {
+    try {
+      const data = await requestServerToken({
+        refresh_token: refreshToken,
+        redirect_uri: (config.redirectUri || '').trim(),
+      });
+      return tokenFromGoogle(data, refreshToken);
+    } catch {
+      return null;
+    }
+  }
   const clientSecret = (config.clientSecret || '').trim();
   const body = new URLSearchParams({
     client_id: (config.clientId || '').trim(),
