@@ -45,6 +45,7 @@ import {
 } from "./lib/deezer";
 import { parsePublicPlaylistUrl } from "./lib/publicPlaylist";
 import { findDuplicates } from "./lib/matching";
+import { buildPreviewItem, matchFromSaved, savedMatchFromPreview, summarizePreview } from "./lib/matchPreview";
 import { parsePlaylistFile } from "./lib/import-export";
 import { useTransferHistory } from "./hooks/useTransferHistory";
 import { RateLimitError } from "./lib/rateLimit";
@@ -197,6 +198,36 @@ function isDeveloperOnlyError(msg) {
   return /\.env|api key|client id|client_secret|credentials|configured|developer|oauth consent|cloud console|redirect uri|scope/i.test(s);
 }
 
+function explainFailure(err) {
+  if (err?.name === "YouTubeQuotaError") {
+    const budget = getYouTubeSearchBudget();
+    return err.message === "YOUTUBE_UNIT_QUOTA"
+      ? "YouTube’s daily limit is used up. You can move the songs already found, and look up the rest tomorrow."
+      : `YouTube searches are used up (${budget.used} of ${budget.limit} today). Songs already found can still be moved. The rest can be looked up tomorrow.`;
+  }
+  if (err instanceof RateLimitError || err?.name === "RateLimitError") {
+    return `The service asked us to slow down. Songs already found can still be moved. Try the rest again${err.retryAfterSec ? ` in about ${err.retryAfterSec}s` : " in a little while"}.`;
+  }
+  const msg = err?.message != null ? String(err.message) : String(err || "");
+  if (isDeveloperOnlyError(msg)) return "Something went wrong. Try signing in again.";
+  return msg || "Could not look up these songs.";
+}
+
+const FLOW_LABELS = ["From", "To", "Choose", "Check", "Preview", "Move", "Done"];
+
+function countLabel(n, singular, plural = `${singular}s`) {
+  const value = Number(n) || 0;
+  return `${value} ${value === 1 ? singular : plural}`;
+}
+
+async function searchDestination(dest, token, track) {
+  if (dest === "spotify") return searchSpotifyTrack(token, track.title, track.artist, track.isrc || null, track.duration || 0);
+  if (dest === "youtube") return searchYouTubeTrack(token, track.title, track.artist);
+  if (dest === "tidal") return searchTidalTrack(token, track.title, track.artist, track.isrc || null, track.duration || 0);
+  if (dest === "deezer") return searchDeezerTrack(token, track.title, track.artist, track.duration || 0);
+  return null;
+}
+
 /* ─────────────────────────────────────────────
    COMPONENTS
    ───────────────────────────────────────────── */
@@ -319,9 +350,11 @@ function PlatformCard({ id, selected, onClick, disabled, connected, onDisconnect
 }
 
 function TrackRow({ track, matchResult, index, accentColor, showMatch }) {
+  const leftOut = !!matchResult?.leftOut;
+  const pending = !!matchResult?.pending;
   const conf = matchResult?.confidence ?? 0;
-  const confColor = conf >= 0.85 ? T.ok : conf >= 0.6 ? T.warn : T.bad;
-  const confLabel = conf >= 0.85 ? "Found" : conf >= 0.6 ? "Close" : "Not found";
+  const confColor = leftOut ? T.warn : pending ? T.textDim : conf >= 0.85 ? T.ok : conf >= 0.6 ? T.warn : T.bad;
+  const confLabel = leftOut ? "Left out" : pending ? "Later" : conf >= 0.85 ? "Found" : conf >= 0.6 ? "Close" : "Not found";
   return (
     <div
       className="track-row track-detail-row"
@@ -345,7 +378,7 @@ function TrackRow({ track, matchResult, index, accentColor, showMatch }) {
       <div className="col-dur" style={{ fontFamily: T.mono, fontSize: 11, color: T.textDim, textAlign: "right" }}>{track.duration != null ? fmtDuration(track.duration) : "—"}</div>
       {showMatch && (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <Badge color={confColor}>{confLabel} {conf > 0 ? `${Math.round(conf * 100)}%` : ""}</Badge>
+          <Badge color={confColor}>{confLabel}{!leftOut && !pending && conf > 0 ? ` ${Math.round(conf * 100)}%` : ""}</Badge>
         </div>
       )}
     </div>
@@ -418,7 +451,7 @@ export default function PlaylistTransferPro() {
   const [view, setView] = useState("transfer");
 
   // Transfer flow
-  const [step, setStep] = useState(0); // 0=source, 1=dest, 2=select, 3=review, 4=transferring, 5=complete
+  const [step, setStep] = useState(0); // 0=source, 1=dest, 2=select, 3=review, 4=preview, 5=transferring, 6=complete
   const [source, setSource] = useState(null);
   const [dest, setDest] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
@@ -435,6 +468,16 @@ export default function PlaylistTransferPro() {
   const intervalRef = useRef(null);
   const transferStep4RunRef = useRef(false);
   const [transferGoToStep5, setTransferGoToStep5] = useState(false);
+  const [previewItems, setPreviewItems] = useState([]);
+  const [previewPhase, setPreviewPhase] = useState("idle"); // idle | running | ready
+  const [previewNote, setPreviewNote] = useState("");
+  const [previewFilter, setPreviewFilter] = useState("all");
+  const [previewExpected, setPreviewExpected] = useState(0);
+  const [budgetTick, setBudgetTick] = useState(0);
+  const previewGen = useRef(0);
+  const previewItemsRef = useRef([]);
+  const honorPreviewRef = useRef(false);
+  previewItemsRef.current = previewItems;
 
   // History (localStorage, capped at 50)
   const { history, addEntry, clearHistory } = useTransferHistory();
@@ -481,8 +524,22 @@ export default function PlaylistTransferPro() {
   }, [source, dest, selectedIds, step]);
   const youtubeBudget = useMemo(
     () => (dest === "youtube" ? getYouTubeSearchBudget() : null),
-    [dest, step]
+    [dest, step, budgetTick]
   );
+  const previewSummary = useMemo(() => summarizePreview(previewItems), [previewItems]);
+  const selectionKey = `${source || ""}|${dest || ""}|${selectedIds.join(",")}`;
+  const selectionKeyRef = useRef(selectionKey);
+
+  useEffect(() => {
+    if (selectionKeyRef.current === selectionKey) return;
+    selectionKeyRef.current = selectionKey;
+    previewGen.current += 1;
+    setPreviewItems([]);
+    setPreviewPhase("idle");
+    setPreviewNote("");
+    setPreviewFilter("all");
+    setPreviewExpected(0);
+  }, [selectionKey]);
 
   // Connect: redirect to OAuth when credentials exist; otherwise show unavailable modal
   const connectPlatform = (pid) => {
@@ -687,13 +744,147 @@ export default function PlaylistTransferPro() {
 
   // When transfer finishes successfully, move to step 5 (backup).
   useEffect(() => {
-    if (!transferGoToStep5 || step !== 4) return;
+    if (!transferGoToStep5 || step !== 5) return;
     setTransferGoToStep5(false);
-    flushSync(() => setStep(5));
+    flushSync(() => setStep(6));
   }, [transferGoToStep5, step]);
 
-  // Run transfer: called from "Start Transfer" button so we use current state (no effect/closure issues).
+  const runPreview = useCallback(async ({ keep = false } = {}) => {
+    const gen = ++previewGen.current;
+    const alive = () => previewGen.current === gen;
+    const already = keep ? previewItemsRef.current.slice() : [];
+    if (!keep) {
+      setPreviewItems([]);
+      setPreviewNote("");
+      setPreviewFilter("all");
+    }
+    setPreviewPhase("running");
+    setProgress(0);
+    setCurrentPlaylist("");
+    setCurrentTrack("Getting your songs...");
+
+    const refreshToken = async (platform, tokenData) => {
+      if (!tokenData) return null;
+      let valid = tokenData;
+      if (platform === "spotify") valid = await getValidSpotifyToken(tokenData);
+      else if (platform === "youtube") valid = await getValidYouTubeToken(tokenData);
+      else if (platform === "tidal") valid = await getValidTidalToken(tokenData);
+      else if (platform === "deezer") valid = await getValidDeezerToken(tokenData);
+      if (valid) setToken(platform, valid);
+      return valid;
+    };
+
+    const destOk = (dest === "spotify" || dest === "youtube" || dest === "tidal" || dest === "deezer") && isConnected(dest);
+    const sourceOk = (source === "spotify" || source === "youtube" || source === "tidal" || source === "deezer") && (isConnected(source) || publicImportPlaylist);
+    if (!sourceOk || !destOk) {
+      if (!alive()) return;
+      setPreviewNote("Connect both services before looking up songs.");
+      setPreviewPhase("ready");
+      return;
+    }
+
+    let sourceTokenData = publicImportPlaylist ? null : getToken(source);
+    let destTokenData = getToken(dest);
+    try {
+      if (!publicImportPlaylist && sourceTokenData) {
+        sourceTokenData = await refreshToken(source, sourceTokenData);
+        if (!alive()) return;
+      }
+      if (destTokenData) {
+        destTokenData = await refreshToken(dest, destTokenData);
+        if (!alive()) return;
+      }
+      const sourceToken = sourceTokenData?.accessToken;
+      const destToken = destTokenData?.accessToken;
+      if (!destToken || (!publicImportPlaylist && !sourceToken)) {
+        if (!alive()) return;
+        setPreviewNote("Sign in again, then preview the matches.");
+        setPreviewPhase("ready");
+        return;
+      }
+
+      const loaded = [];
+      for (let idx = 0; idx < selectedPlaylists.length; idx++) {
+        if (!alive()) return;
+        const pl = selectedPlaylists[idx];
+        setCurrentPlaylist(pl.name);
+        setCurrentTrack(`Fetching songs (${idx + 1}/${selectedPlaylists.length})`);
+        let tracks = pl.tracks?.length ? pl.tracks : [];
+        if (tracks.length === 0 && (pl.trackCount || 0) > 0 && sourceToken) {
+          if (source === "spotify") tracks = await getSpotifyPlaylistTracks(sourceToken, pl.id);
+          else if (source === "youtube") tracks = await getYouTubePlaylistTracks(sourceToken, pl.id);
+          else if (source === "tidal") tracks = await getTidalPlaylistTracks(sourceToken, pl.id);
+          else if (source === "deezer") tracks = await getDeezerPlaylistTracks(sourceToken, pl.id);
+        }
+        if (!alive()) return;
+        loaded.push({ ...pl, tracks });
+      }
+      if (!alive()) return;
+      setPlaylists((prev) => prev.map((p) => {
+        const found = loaded.find((x) => x.id === p.id);
+        return found ? { ...p, tracks: found.tracks } : p;
+      }));
+
+      const queue = [];
+      for (const pl of loaded) {
+        for (const track of pl.tracks || []) queue.push({ pl, track });
+      }
+      setPreviewExpected(queue.length);
+      if (queue.length === 0) {
+        setPreviewNote("These playlists have no songs to look up.");
+        setPreviewPhase("ready");
+        return;
+      }
+
+      const seen = new Set(already.map((item) => item.key));
+      const items = already.slice();
+      let lookedUp = already.length;
+      let note = "";
+      for (let i = 0; i < queue.length; i++) {
+        if (!alive()) return;
+        const { pl, track } = queue[i];
+        const key = `${pl.id}:${track.id || track.videoId || track.title}`;
+        if (seen.has(key)) continue;
+        setCurrentPlaylist(pl.name);
+        setCurrentTrack(`${track.title} — ${track.artist}`);
+        let match = null;
+        try {
+          match = await searchDestination(dest, destToken, track);
+        } catch (err) {
+          note = explainFailure(err);
+          if (dest === "youtube") setBudgetTick((n) => n + 1);
+          break;
+        }
+        if (!alive()) return;
+        if (dest === "youtube") setBudgetTick((n) => n + 1);
+        lookedUp += 1;
+        setProgress(Math.round((lookedUp / queue.length) * 100));
+        items.push(buildPreviewItem({
+          dest,
+          key,
+          playlistId: pl.id,
+          playlistName: pl.name,
+          playlistEmoji: pl.emoji,
+          track,
+          match,
+        }));
+        setPreviewItems(items.slice());
+        if (i % 8 === 0) await new Promise((r) => setTimeout(r, 0));
+      }
+      if (!alive()) return;
+      setPreviewItems(items.slice());
+      setPreviewNote(note);
+      setPreviewPhase("ready");
+    } catch (err) {
+      if (!alive()) return;
+      setPreviewNote(explainFailure(err));
+      setPreviewPhase("ready");
+    }
+  }, [source, dest, selectedPlaylists, publicImportPlaylist, getToken, setToken, isConnected]);
+
+  // Run transfer: called from the preview or resume button so we use current state.
   const runTransfer = useCallback(async () => {
+    const backStep = honorPreviewRef.current ? 4 : 3;
     const destOk = (dest === "spotify" || dest === "youtube" || dest === "tidal" || dest === "deezer") && isConnected(dest);
     const sourceOk = (source === "spotify" || source === "youtube" || source === "tidal" || source === "deezer") && (isConnected(source) || publicImportPlaylist);
     const isReal = sourceOk && destOk;
@@ -703,7 +894,7 @@ export default function PlaylistTransferPro() {
       let destTokenData = getToken(dest);
       if (!destTokenData) {
         setTransferLog((prev) => [...prev, { type: "error", text: "Missing connection. Please connect the destination." }]);
-        setStep(3);
+        setStep(backStep);
         return;
       }
       const destTokenRef = { current: null };
@@ -792,7 +983,7 @@ export default function PlaylistTransferPro() {
         destTokenRef.current = currentDestToken;
         if (!destToken) {
           setTransferLog((prev) => [...prev, { type: "error", text: "Destination token missing. Connect the destination and retry." }]);
-          setStep(3);
+          setStep(backStep);
           return;
         }
         if (!publicImportPlaylist && !sourceToken) {
@@ -805,7 +996,7 @@ export default function PlaylistTransferPro() {
             ? `${platforms.join(" / ")} token expired or invalid. Sign out of the listed platform(s) in the app, sign in again, then retry the transfer.`
             : "Could not get valid tokens.";
           setTransferLog((prev) => [...prev, { type: "error", text: reauthMsg }]);
-          setStep(3);
+          setStep(backStep);
           return;
         }
         const playlistsWithTracks = [];
@@ -831,7 +1022,7 @@ export default function PlaylistTransferPro() {
           setTransferLog((prev) => [...prev, { type: "done", text: "No tracks to transfer." }]);
           setMatchResults({});
           setLastTransferPlaylists(playlistsWithTracks);
-          setStep(5);
+          setStep(6);
           return;
         }
         const signature = checkpointSignature(source, dest, playlistsWithTracks.map((p) => p.id));
@@ -846,8 +1037,21 @@ export default function PlaylistTransferPro() {
             setTransferLog((prev) => [...prev, { type: "header", text: `Resuming transfer (${resumed} tracks already saved).` }]);
           }
         } else {
-          checkpoint = { signature, source, dest, destPlaylistIds: {}, done: {}, results: {} };
+          checkpoint = { signature, source, dest, destPlaylistIds: {}, done: {}, results: {}, skipped: {}, matches: {} };
         }
+        checkpoint.skipped = checkpoint.skipped || {};
+        checkpoint.matches = checkpoint.matches || {};
+        if (honorPreviewRef.current) {
+          for (const item of previewItemsRef.current) {
+            if (item.band !== "missing" && !item.included) checkpoint.skipped[item.key] = true;
+            const saved = savedMatchFromPreview(dest, item);
+            if (saved) checkpoint.matches[item.key] = saved;
+          }
+          saveCheckpoint(checkpoint);
+        }
+        const previewByKey = honorPreviewRef.current
+          ? new Map(previewItemsRef.current.map((item) => [item.key, item]))
+          : null;
         Object.assign(allResults, checkpoint.results);
         if (dest === "youtube") {
           const budget = getYouTubeSearchBudget();
@@ -867,6 +1071,33 @@ export default function PlaylistTransferPro() {
           if (playlistDone && checkpoint.destPlaylistIds[pl.id]) {
             setTransferLog((prev) => [...prev, { type: "done", text: `✓ "${pl.name}" already transferred` }]);
             continue;
+          }
+          if (previewByKey && !checkpoint.destPlaylistIds[pl.id]) {
+            const adding = tracks.some((track) => {
+              const key = trackKeyOf(pl.id, track);
+              if (checkpoint.done[key] || checkpoint.skipped?.[key]) return false;
+              const item = previewByKey.get(key);
+              return !!(item && item.included && item.match);
+            });
+            if (!adding) {
+              for (const track of tracks) {
+                const key = trackKeyOf(pl.id, track);
+                const tid = track.id || track.videoId || track.title;
+                if (checkpoint.done[key]) continue;
+                const item = previewByKey.get(key);
+                if (!item) continue;
+                checkpoint.done[key] = true;
+                const result = !item.included && item.band !== "missing"
+                  ? { confidence: item.confidence, method: item.method, leftOut: true }
+                  : { confidence: item.confidence, method: item.method || "none" };
+                allResults[tid] = result;
+                checkpoint.results[tid] = result;
+                processed++;
+              }
+              publishResults(true);
+              setTransferLog((prev) => [...prev, { type: "done", text: `✓ "${pl.name}" — nothing to add` }]);
+              continue;
+            }
           }
           setCurrentPlaylist(pl.name);
           let destPlaylistId = checkpoint.destPlaylistIds[pl.id];
@@ -906,9 +1137,28 @@ export default function PlaylistTransferPro() {
             const tid = track.id || track.videoId || track.title;
             const key = trackKeyOf(pl.id, track);
             if (checkpoint.done[key]) continue;
+            if (checkpoint.skipped?.[key]) {
+              checkpoint.done[key] = true;
+              const skippedItem = previewByKey?.get(key);
+              const skippedResult = skippedItem
+                ? { confidence: skippedItem.confidence, method: skippedItem.method, leftOut: true }
+                : (checkpoint.results?.[tid] || { confidence: 0, method: "none", leftOut: true });
+              allResults[tid] = skippedResult;
+              checkpoint.results[tid] = skippedResult;
+              processed++;
+              setProgress(15 + Math.round((processed / total) * 85));
+              publishResults(false);
+              continue;
+            }
             setCurrentTrack(`${track.title} — ${track.artist}`);
             let match = null;
-            if (dest === "spotify") match = await searchSpotifyTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
+            if (previewByKey) {
+              const item = previewByKey.get(key);
+              if (!item) continue;
+              match = item.match;
+            } else if (checkpoint.matches?.[key]) {
+              match = matchFromSaved(dest, checkpoint.matches[key]);
+            } else if (dest === "spotify") match = await searchSpotifyTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
             else if (dest === "youtube") match = await searchYouTubeTrack(destTokenRef.current, track.title, track.artist);
             else if (dest === "tidal") match = await searchTidalTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
             else if (dest === "deezer") match = await searchDeezerTrack(destTokenRef.current, track.title, track.artist, track.duration || 0);
@@ -931,14 +1181,32 @@ export default function PlaylistTransferPro() {
           }
           await flushPending();
           publishResults(true);
-          const exactCount = tracks.filter((t) => (allResults[t.id || t.videoId || t.title]?.confidence ?? 0) >= 0.85).length;
+          const exactCount = tracks.filter((t) => {
+            const result = allResults[t.id || t.videoId || t.title];
+            return result && !result.leftOut && !result.pending && result.confidence >= 0.85;
+          }).length;
           setTransferLog((prev) => [...prev, { type: "done", text: `✓ "${pl.name}" — ${exactCount}/${tracks.length} matched` }]);
         }
-        clearCheckpoint();
-        setTransferLog((prev) => [...prev, { type: "done", text: "Transfer complete." }]);
-        const exact = Object.values(allResults).filter((r) => r.confidence >= 0.85).length;
-        const fuzzy = Object.values(allResults).filter((r) => r.confidence >= 0.6 && r.confidence < 0.85).length;
-        const missing = Object.values(allResults).filter((r) => r.confidence < 0.6).length;
+        const allDone = playlistsWithTracks.every((pl) =>
+          (pl.tracks || []).every((track) => checkpoint.done[trackKeyOf(pl.id, track)])
+        );
+        if (allDone) clearCheckpoint();
+        else {
+          saveCheckpoint(checkpoint);
+          setTransferLog((prev) => [...prev, { type: "header", text: "Some songs still need a lookup. Come back and resume to finish them." }]);
+        }
+        setTransferLog((prev) => [...prev, { type: "done", text: allDone ? "Transfer complete." : "Moved the songs that were ready." }]);
+        for (const pl of playlistsWithTracks) {
+          for (const track of pl.tracks || []) {
+            const tid = track.id || track.videoId || track.title;
+            if (!allResults[tid]) allResults[tid] = { confidence: 0, method: "none", pending: true };
+          }
+        }
+        const counted = Object.values(allResults);
+        const exact = counted.filter((r) => !r.leftOut && !r.pending && r.confidence >= 0.85).length;
+        const fuzzy = counted.filter((r) => !r.leftOut && !r.pending && r.confidence >= 0.6 && r.confidence < 0.85).length;
+        const missing = counted.filter((r) => !r.leftOut && !r.pending && r.confidence < 0.6).length;
+        const leftOut = counted.filter((r) => r.leftOut).length;
         addEntry({
           source,
           dest,
@@ -947,11 +1215,12 @@ export default function PlaylistTransferPro() {
           exact,
           fuzzy,
           missing,
+          leftOut,
         });
         setMatchResults({ ...allResults });
         setLastTransferPlaylists(playlistsWithTracks);
-        setStep(5);
-        setShowViewOnPlatformModal(true);
+        setStep(6);
+        setShowViewOnPlatformModal(exact + fuzzy > 0);
       } catch (err) {
         try { await flushPending(); } catch { /* keep the original error */ }
         if (checkpoint) saveCheckpoint(checkpoint);
@@ -975,14 +1244,14 @@ export default function PlaylistTransferPro() {
           msg = "Something went wrong. Try signing in again or try again later.";
         }
         setTransferLog((prev) => [...prev, { type: "error", text: msg || "Transfer failed" }]);
-        setStep(3);
+        setStep(backStep);
       }
       return;
     }
 
     // Only real transfers: require both source and destination connected
     setTransferLog((prev) => [...prev, { type: "error", text: "Connect both source and destination to transfer. Only real transfers are supported." }]);
-    setStep(3);
+    setStep(backStep);
   }, [source, dest, selectedPlaylists, publicImportPlaylist, getToken, setToken, isConnected, addEntry]);
 
   // Clear reconnect tips when leaving step 3 (e.g. user went back or changed flow).
@@ -995,7 +1264,7 @@ export default function PlaylistTransferPro() {
 
   // On step 4: set initial UI once when entering step 4 (transfer is started by button).
   useEffect(() => {
-    if (step !== 4) {
+    if (step !== 5) {
       transferStep4RunRef.current = false;
       return;
     }
@@ -1074,6 +1343,12 @@ export default function PlaylistTransferPro() {
     setCurrentPlaylist("");
     setCurrentTrack("");
     setLastTransferPlaylists([]);
+    setPreviewItems([]);
+    setPreviewPhase("idle");
+    setPreviewNote("");
+    setPreviewFilter("all");
+    setPreviewExpected(0);
+    previewGen.current += 1;
     setPublicImportPlaylist(null);
     setPublicImportUrl("");
     setPublicImportError("");
@@ -1083,12 +1358,40 @@ export default function PlaylistTransferPro() {
   const matchStats = useMemo(() => {
     const results = Object.values(matchResults);
     return {
-      exact: results.filter((r) => r.confidence >= 0.85).length,
-      fuzzy: results.filter((r) => r.confidence >= 0.6 && r.confidence < 0.85).length,
-      missing: results.filter((r) => r.confidence < 0.6).length,
-      total: results.length,
+      exact: results.filter((r) => !r.leftOut && !r.pending && r.confidence >= 0.85).length,
+      fuzzy: results.filter((r) => !r.leftOut && !r.pending && r.confidence >= 0.6 && r.confidence < 0.85).length,
+      missing: results.filter((r) => !r.leftOut && !r.pending && r.confidence < 0.6).length,
+      leftOut: results.filter((r) => r.leftOut).length,
+      pending: results.filter((r) => r.pending).length,
+      total: results.filter((r) => !r.pending).length,
     };
   }, [matchResults]);
+  const canContinue =
+    step === 0 ? Boolean(source) :
+    step === 1 ? Boolean(dest) :
+    step === 2 ? selectedIds.length > 0 :
+    step === 3 ? true :
+    step === 4 ? previewPhase === "ready" && previewSummary.included > 0 :
+    false;
+  const continueLabel =
+    step === 4
+      ? previewPhase === "running"
+        ? "Looking them up…"
+        : previewSummary.included === 0
+          ? "Nothing to move"
+          : `Move ${previewSummary.included} song${previewSummary.included === 1 ? "" : "s"} →`
+      : step === 3
+        ? transferResume
+          ? "Resume →"
+          : previewPhase === "ready" && previewItems.length > 0 && previewItems.length < previewExpected
+            ? "Look up the rest →"
+            : previewPhase === "ready" && previewItems.length > 0
+              ? "Review matches →"
+              : "Preview matches →"
+        : step === 2
+          ? `Review ${countLabel(selectedIds.length, "playlist")} →`
+          : "Continue →";
+  const visiblePreview = previewFilter === "all" ? previewItems : previewItems.filter((item) => item.band === previewFilter);
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: T.font, position: "relative", overflow: "hidden" }}>
@@ -1111,7 +1414,7 @@ export default function PlaylistTransferPro() {
             ].map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => { setView(tab.id); if (tab.id === "transfer" && step > 5) reset(); }}
+                onClick={() => { setView(tab.id); if (tab.id === "transfer" && step > 6) reset(); }}
                 style={{
                   background: view === tab.id ? T.accent : "transparent",
                   border: "none",
@@ -1138,14 +1441,14 @@ export default function PlaylistTransferPro() {
           <>
             <div style={{ marginBottom: 28 }}>
               <div style={{ display: "flex", gap: 6, marginBottom: 10 }} aria-hidden="true">
-                {["From", "To", "Choose", "Check", "Move", "Done"].map((label, i) => (
+                {FLOW_LABELS.map((label, i) => (
                   <div key={label} style={{ flex: 1 }}>
                     <div style={{ height: 3, borderRadius: 99, background: i <= step ? T.accent : T.border, transition: "background 0.3s ease" }} />
                   </div>
                 ))}
               </div>
               <p style={{ fontSize: 12, color: T.textDim, fontWeight: 700, letterSpacing: "0.04em" }}>
-                {["From", "To", "Choose", "Check", "Move", "Done"][step] || "Done"}
+                {FLOW_LABELS[step] || "Done"}
                 {source && dest && step >= 1 ? `  ·  ${PLATFORMS[source]?.name} to ${PLATFORMS[dest]?.name}` : ""}
               </p>
             </div>
@@ -1229,12 +1532,14 @@ export default function PlaylistTransferPro() {
               <div className="fade-up">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                   <h2 className="step-title">Choose what to bring</h2>
-                  <button onClick={() => setSelectedIds(selectedIds.length === playlists.length ? [] : playlists.map((p) => p.id))} style={{ background: "none", border: "none", color: accentColor, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
-                    {selectedIds.length === playlists.length ? "Deselect all" : "Select all"}
-                  </button>
+                  {playlists.length > 0 && (
+                    <button onClick={() => setSelectedIds(selectedIds.length === playlists.length ? [] : playlists.map((p) => p.id))} style={{ background: "none", border: "none", color: accentColor, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: T.font }}>
+                      {selectedIds.length === playlists.length ? "Deselect all" : "Select all"}
+                    </button>
+                  )}
                 </div>
                 <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 16 }}>
-                  {playlistsLoading ? "Loading playlists..." : playlists.length === 0 ? "No playlists found. Make sure you're connected and have playlists on " + PLATFORMS[source].name + "." : `Found ${playlists.length} playlists on ${PLATFORMS[source].name}`}
+                  {playlistsLoading ? "Loading playlists..." : playlists.length === 0 ? `No playlists on ${PLATFORMS[source].name} yet.` : `${countLabel(playlists.length, "playlist")} on ${PLATFORMS[source].name}`}
                 </p>
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1271,7 +1576,7 @@ export default function PlaylistTransferPro() {
                           <div style={{ width: 42, height: 42, borderRadius: 8, background: "rgba(0,0,0,0.04)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{pl.emoji}</div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13, fontWeight: 600, color: T.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{pl.name}</div>
-                            <div style={{ fontSize: 11, color: T.textDim }}>{pl.trackCount} tracks · {pl.duration}</div>
+                            <div style={{ fontSize: 11, color: T.textDim }}>{countLabel(pl.trackCount || 0, "song")}{pl.duration && pl.duration !== `${pl.trackCount} tracks` ? ` · ${pl.duration}` : ""}</div>
                           </div>
                           <button
                             onClick={(e) => { e.stopPropagation(); setExpandedPlaylist(expanded ? null : pl.id); }}
@@ -1297,7 +1602,7 @@ export default function PlaylistTransferPro() {
 
                 {selectedIds.length > 0 && (
                   <div className="fade-up" style={{ marginTop: 14, padding: "12px 16px", borderRadius: T.radiusSm, background: `${accentColor}0a`, border: `1px solid ${accentColor}1a`, fontSize: 13, color: T.textMuted, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>{selectedIds.length} playlist{selectedIds.length > 1 ? "s" : ""} · {totalTracks} tracks</span>
+                    <span>{countLabel(selectedIds.length, "playlist")} · {countLabel(totalTracks, "song")}</span>
                     <div style={{ display: "flex", gap: 6 }}>
                       <Chip color={accentColor} active onClick={() => exportPlaylists("json")}>Export JSON</Chip>
                       <Chip color={accentColor} active={false} onClick={() => exportPlaylists("csv")}>Export CSV</Chip>
@@ -1311,8 +1616,8 @@ export default function PlaylistTransferPro() {
             {step === 3 && (
               <div className="fade-up">
                 <h2 className="step-title" style={{ marginBottom: 8 }}>Take a last look</h2>
-                <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 20 }}>
-                  Transferring {selectedIds.length} playlist{selectedIds.length > 1 ? "s" : ""} ({totalTracks} tracks) from <span style={{ color: PLATFORMS[source].color, fontWeight: 600 }}>{PLATFORMS[source].name}</span> → <span style={{ color: PLATFORMS[dest].color, fontWeight: 600 }}>{PLATFORMS[dest].name}</span>
+                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
+                  {countLabel(selectedIds.length, "playlist")} · {countLabel(totalTracks, "song")} from <span style={{ color: PLATFORMS[source].color, fontWeight: 700 }}>{PLATFORMS[source].name}</span> to <span style={{ color: PLATFORMS[dest].color, fontWeight: 700 }}>{PLATFORMS[dest].name}</span>. Next you’ll see which songs turned up, before anything is added.
                 </p>
 
                 {transferResume && (
@@ -1323,7 +1628,7 @@ export default function PlaylistTransferPro() {
 
                 {youtubeBudget && (
                   <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.youtube.color}10`, border: `1px solid ${PLATFORMS.youtube.color}33`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
-                    YouTube searches left today: <strong>{youtubeBudget.remaining}</strong> of {youtubeBudget.limit}. Each uncached song uses one search. The transfer pauses when the daily limit is reached, and cached matches are reused for free.
+                    YouTube searches left today: <strong>{youtubeBudget.remaining}</strong> of {youtubeBudget.limit}. Each new song uses one search while we look it up. Moving it afterward reuses that result.
                   </div>
                 )}
 
@@ -1413,7 +1718,7 @@ export default function PlaylistTransferPro() {
                       <span style={{ fontSize: 18 }}>{pl.emoji}</span>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 13, fontWeight: 600 }}>{pl.name}</div>
-                        <div style={{ fontSize: 11, color: T.textDim }}>{pl.trackCount} tracks</div>
+                        <div style={{ fontSize: 11, color: T.textDim }}>{countLabel(pl.trackCount || 0, "song")}</div>
                       </div>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={accentColor} strokeWidth="2"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
                     </div>
@@ -1422,8 +1727,162 @@ export default function PlaylistTransferPro() {
               </div>
             )}
 
-            {/* ── STEP 4: Transferring ── */}
+            {/* ── STEP 4: Match preview ── */}
             {step === 4 && (
+              <div className="fade-up">
+                <h2 className="step-title" style={{ marginBottom: 8 }}>
+                  {previewPhase === "running" ? "Finding these songs" : "Which songs should come along?"}
+                </h2>
+                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 18, lineHeight: 1.5 }}>
+                  {previewPhase === "running"
+                    ? `Looking them up on ${PLATFORMS[dest]?.name || "the destination"}. Nothing is added yet.`
+                    : "Found songs come along. A close match stays until you leave it out."}
+                </p>
+
+                {previewPhase === "running" && (
+                  <div style={{ marginBottom: 18 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+                      <span style={{ fontSize: 13, color: T.textMuted, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {currentPlaylist ? `${currentPlaylist} · ` : ""}{currentTrack || "Looking…"}
+                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: accentColor, flexShrink: 0 }}>
+                        {previewExpected > 0 ? `${Math.min(previewItems.length, previewExpected)} of ${previewExpected}` : `${progress}%`}
+                      </span>
+                    </div>
+                    <div style={{ width: "100%", height: 8, borderRadius: 99, background: T.border, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${progress}%`, background: accentColor, transition: "width 0.25s ease" }} />
+                    </div>
+                  </div>
+                )}
+
+                {youtubeBudget && (
+                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: T.paper, border: `1px solid ${T.border}`, fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
+                    YouTube searches left today: <strong style={{ color: T.text }}>{youtubeBudget.remaining}</strong> of {youtubeBudget.limit}. Songs already found do not use another search.
+                  </div>
+                )}
+
+                {previewNote && (
+                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: "#fbf6ee", border: `1px solid ${T.border}`, fontSize: 13, color: T.text, lineHeight: 1.5 }}>
+                    {previewNote}
+                  </div>
+                )}
+
+                {previewItems.length > 0 && (
+                  <>
+                    <div className="stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 14 }}>
+                      {[
+                        { label: "Found", value: previewSummary.found, color: T.ok },
+                        { label: "Close", value: previewSummary.close, color: T.warn },
+                        { label: "Not found", value: previewSummary.missing, color: T.bad },
+                        { label: "Coming along", value: previewSummary.included, color: T.text },
+                      ].map((s) => (
+                        <div key={s.label} style={{ padding: "12px 8px", borderRadius: T.radiusSm, background: T.paper, border: `1px solid ${T.border}`, textAlign: "center" }}>
+                          <div style={{ fontFamily: T.display, fontSize: 22, fontWeight: 560, color: s.color }}>{s.value}</div>
+                          <div style={{ fontSize: 11, color: T.textDim, fontWeight: 600 }}>{s.label}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+                      {[
+                        { id: "all", label: "All" },
+                        { id: "found", label: "Found" },
+                        { id: "close", label: "Close" },
+                        { id: "missing", label: "Not found" },
+                      ].map((opt) => (
+                        <Chip key={opt.id} color={accentColor} active={previewFilter === opt.id} onClick={() => setPreviewFilter(opt.id)}>{opt.label}</Chip>
+                      ))}
+                      {previewSummary.close > 0 && previewPhase === "ready" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const drop = previewItems.some((item) => item.band === "close" && item.included);
+                            setPreviewItems((prev) => prev.map((item) => item.band === "close" ? { ...item, included: !drop } : item));
+                          }}
+                          style={{ background: "none", border: "none", color: T.warn, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font, padding: "4px 2px" }}
+                        >
+                          {previewItems.some((item) => item.band === "close" && item.included) ? "Leave out close matches" : "Bring close matches"}
+                        </button>
+                      )}
+                    </div>
+
+                    {previewPhase === "ready" && previewExpected > previewItems.length && (
+                      <button
+                        type="button"
+                        onClick={() => runPreview({ keep: true })}
+                        className="btn-hover"
+                        style={{ marginBottom: 12, background: "none", border: "none", color: accentColor, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font, padding: 0 }}
+                      >
+                        Look up the rest
+                      </button>
+                    )}
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 420, overflowY: "auto" }}>
+                      {visiblePreview.length === 0 && (
+                        <p style={{ fontSize: 13, color: T.textDim, padding: "12px 0" }}>No songs in this group.</p>
+                      )}
+                      {(() => {
+                        const severalPlaylists = new Set(visiblePreview.map((row) => row.playlistId)).size > 1;
+                        return visiblePreview.map((item, index) => {
+                        const bandColor = item.band === "found" ? T.ok : item.band === "close" ? T.warn : T.bad;
+                        const bandLabel = item.band === "found" ? "Found" : item.band === "close" ? "Close" : "Not found";
+                        const heard = item.match && (item.match.title || item.match.artist)
+                          ? `${item.match.title || item.track.title} — ${item.match.artist || ""}`.trim()
+                          : "";
+                        const sameSong = !item.match || (
+                          (item.match.title || "") === (item.track.title || "") &&
+                          (item.match.artist || "") === (item.track.artist || "")
+                        );
+                        const showPlaylist = index === 0 || visiblePreview[index - 1].playlistId !== item.playlistId;
+                        const leftOut = !item.included && item.band !== "missing";
+                        return (
+                          <div key={item.key}>
+                            {severalPlaylists && showPlaylist && (
+                              <div style={{ fontSize: 12, fontWeight: 700, color: T.textDim, padding: index === 0 ? "2px 4px 6px" : "12px 4px 6px" }}>{item.playlistName}</div>
+                            )}
+                            <div style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "10px 12px", borderRadius: T.radiusSm, background: item.included ? T.paper : "transparent", border: `1px solid ${item.included ? T.border : "transparent"}`, opacity: leftOut ? 0.62 : 1 }}>
+                              <button
+                                type="button"
+                                aria-pressed={item.included}
+                                aria-label={item.band === "missing" ? `${item.track.title} was not found` : item.included ? `Leave out ${item.track.title}` : `Bring ${item.track.title}`}
+                                disabled={item.band === "missing" || previewPhase === "running"}
+                                onClick={() => {
+                                  if (item.band === "missing") return;
+                                  setPreviewItems((prev) => prev.map((row) => row.key === item.key ? { ...row, included: !row.included } : row));
+                                }}
+                                style={{
+                                  width: 20, height: 20, marginTop: 2, borderRadius: 5, flexShrink: 0,
+                                  border: `2px solid ${item.included ? accentColor : T.borderLight}`,
+                                  background: item.included ? accentColor : "transparent",
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  cursor: item.band === "missing" || previewPhase === "running" ? "default" : "pointer",
+                                  opacity: item.band === "missing" ? 0.35 : 1,
+                                }}
+                              >
+                                {item.included && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="4"><polyline points="20 6 9 17 4 12" /></svg>}
+                              </button>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: T.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.track.title}</div>
+                                <div style={{ fontSize: 12, color: T.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{severalPlaylists ? item.track.artist : `${item.track.artist} · ${item.playlistName}`}</div>
+                                {item.band !== "missing" && !sameSong && heard && (
+                                  <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Sounds like {heard}</div>
+                                )}
+                                {item.method === "ISRC" && <div style={{ fontSize: 12, color: T.textDim, marginTop: 2 }}>Same recording</div>}
+                              </div>
+                              <span style={{ flexShrink: 0 }}><Badge color={bandColor}>{bandLabel}</Badge></span>
+                            </div>
+                          </div>
+                        );
+                      });
+                      })()}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* ── STEP 5: Transferring ── */}
+            {step === 5 && (
               <div className="fade-up">
                 <div style={{ textAlign: "center", marginBottom: 20 }}>
                   <h2 className="step-title" style={{ marginBottom: 8 }}>Moving your music</h2>
@@ -1488,7 +1947,7 @@ export default function PlaylistTransferPro() {
                   <div style={{ marginTop: 16, textAlign: "center" }}>
                     <button
                       type="button"
-                      onClick={() => setStep(5)}
+                      onClick={() => setStep(6)}
                       className="btn-hover"
                       style={{ background: accentColor, border: "none", borderRadius: T.radius, padding: "12px 24px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
                     >
@@ -1499,24 +1958,31 @@ export default function PlaylistTransferPro() {
               </div>
             )}
 
-            {/* ── STEP 5: Complete ── */}
-            {step === 5 && (
+            {/* ── STEP 6: Complete ── */}
+            {step === 6 && (
               <div className="fade-up" style={{ textAlign: "center" }}>
                 <div style={{ width: 72, height: 72, borderRadius: "50%", background: `${PLATFORMS[dest].color}15`, border: `3px solid ${PLATFORMS[dest].color}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke={PLATFORMS[dest].color} strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
                 </div>
 
-                <h2 className="step-title" style={{ marginBottom: 8 }}>They’re home.</h2>
-                <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 24, lineHeight: 1.6 }}>
-                  {selectedIds.length} playlist{selectedIds.length > 1 ? "s" : ""} moved from <span style={{ color: PLATFORMS[source].color, fontWeight: 600 }}>{PLATFORMS[source].name}</span> to <span style={{ color: PLATFORMS[dest].color, fontWeight: 600 }}>{PLATFORMS[dest].name}</span>
+                <h2 className="step-title" style={{ marginBottom: 8 }}>{matchStats.exact + matchStats.fuzzy > 0 ? "They’re home." : "Nothing was added."}</h2>
+                <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 16, lineHeight: 1.6 }}>
+                  {matchStats.exact + matchStats.fuzzy > 0
+                    ? `${countLabel(matchStats.exact + matchStats.fuzzy, "song")} added on ${PLATFORMS[dest].name}.`
+                    : `No songs from this selection were added on ${PLATFORMS[dest].name}.`}
                 </p>
 
-                {/* Match stats */}
+                {(matchStats.leftOut > 0 || matchStats.pending > 0) && (
+                  <p style={{ fontSize: 14, color: T.textMuted, marginBottom: 16, lineHeight: 1.5 }}>
+                    {matchStats.leftOut > 0 ? `${countLabel(matchStats.leftOut, "song")} left out. ` : ""}
+                    {matchStats.pending > 0 ? `${countLabel(matchStats.pending, "song")} still need a lookup.` : ""}
+                  </p>
+                )}
                 <div className="stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 24, maxWidth: 480, margin: "0 auto 24px" }}>
                   {[
                     { label: "Total", value: matchStats.total, color: T.text },
                     { label: "Found", value: matchStats.exact, color: T.ok },
-                    { label: "Close match", value: matchStats.fuzzy, color: T.warn },
+                    { label: "Close", value: matchStats.fuzzy, color: T.warn },
                     { label: "Not found", value: matchStats.missing, color: T.bad },
                   ].map((s) => (
                     <div key={s.label} style={{ padding: "14px 8px", borderRadius: T.radiusSm, background: T.surface, border: `1px solid ${T.border}` }}>
@@ -1531,9 +1997,10 @@ export default function PlaylistTransferPro() {
                   {(lastTransferPlaylists.length ? lastTransferPlaylists : selectedPlaylists).map((pl) => {
                     const tracks = pl.tracks || [];
                     const plMatches = tracks.map((t) => ({ track: t, result: matchResults[t.id] || matchResults[t.videoId] || matchResults[t.title] }));
-                    const exact = plMatches.filter((m) => m.result?.confidence >= 0.85).length;
-                    const fuzzy = plMatches.filter((m) => m.result?.confidence >= 0.6 && m.result?.confidence < 0.85).length;
-                    const missing = plMatches.filter((m) => !m.result || m.result.confidence < 0.6).length;
+                    const exact = plMatches.filter((m) => !m.result?.leftOut && !m.result?.pending && (m.result?.confidence ?? 0) >= 0.85).length;
+                    const fuzzy = plMatches.filter((m) => !m.result?.leftOut && !m.result?.pending && (m.result?.confidence ?? 0) >= 0.6 && (m.result?.confidence ?? 0) < 0.85).length;
+                    const missing = plMatches.filter((m) => !m.result?.leftOut && !m.result?.pending && (!m.result || m.result.confidence < 0.6)).length;
+                    const leftOutCount = plMatches.filter((m) => m.result?.leftOut).length;
                     const isExpanded = expandedPlaylist === pl.id;
                     return (
                       <div key={pl.id} style={{ marginBottom: 4 }}>
@@ -1548,6 +2015,7 @@ export default function PlaylistTransferPro() {
                           <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                             <Badge color={T.ok}>{exact}</Badge>
                             {fuzzy > 0 && <Badge color={T.warn}>{fuzzy}</Badge>}
+                            {leftOutCount > 0 && <Badge color={T.textDim}>{leftOutCount}</Badge>}
                             {missing > 0 && <Badge color={T.bad}>{missing}</Badge>}
                           </div>
                           <span style={{ color: T.textDim, fontSize: 16, transition: "transform 0.2s", transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
@@ -1576,35 +2044,61 @@ export default function PlaylistTransferPro() {
             )}
 
             {/* ── Navigation Buttons ── */}
-            {step >= 0 && step <= 3 && (
+            {step >= 0 && step <= 4 && (
               <div className="nav-buttons" style={{ display: "flex", justifyContent: "space-between", marginTop: 28, gap: 10 }}>
                 {step > 0 ? (
-                  <button onClick={() => setStep((s) => s - 1)} className="btn-hover" style={{ background: T.surface, border: `1.5px solid ${T.borderLight}`, borderRadius: T.radius, padding: "12px 24px", color: T.textMuted, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font, transition: "all 0.2s ease" }}>
+                  <button
+                    onClick={() => {
+                      if (step === 4 && previewPhase === "running") {
+                        previewGen.current += 1;
+                        setPreviewPhase("ready");
+                        setPreviewNote((note) => note || "Lookup stopped. Songs already found are still here.");
+                      }
+                      setStep((s) => s - 1);
+                    }}
+                    className="btn-hover"
+                    style={{ background: T.surface, border: `1.5px solid ${T.borderLight}`, borderRadius: T.radius, padding: "12px 24px", color: T.textMuted, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: T.font, transition: "all 0.2s ease" }}
+                  >
                     ← Back
                   </button>
                 ) : <div />}
                 <button
                   onClick={() => {
-                    if (step === 3) {
-                      setStep(4);
+                    if (step === 4) {
+                      honorPreviewRef.current = true;
+                      setStep(5);
                       runTransfer();
+                    } else if (step === 3) {
+                      if (transferResume) {
+                        honorPreviewRef.current = false;
+                        setStep(5);
+                        runTransfer();
+                      } else if (previewPhase === "ready" && previewItems.length > 0 && previewItems.length < previewExpected) {
+                        setStep(4);
+                        runPreview({ keep: true });
+                      } else if (previewPhase === "ready" && previewItems.length > 0) {
+                        setStep(4);
+                      } else {
+                        setStep(4);
+                        runPreview();
+                      }
                     } else {
                       setStep((s) => s + 1);
                     }
                   }}
-                  disabled={step === 0 ? !source : step === 1 ? !dest : step === 2 ? selectedIds.length === 0 : false}
+                  disabled={!canContinue}
                   className="btn-hover"
                   style={{
-                    background: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? accentColor : T.surface,
+                    background: canContinue ? accentColor : T.surface,
                     border: "none", borderRadius: T.radius, padding: "12px 28px",
-                    color: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? "#fff" : T.textDim,
-                    fontSize: 13, fontWeight: 700, cursor: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? "pointer" : "not-allowed",
+                    color: canContinue ? "#fffdf8" : T.textDim,
+                    fontSize: 13, fontWeight: 700, cursor: canContinue ? "pointer" : "not-allowed",
                     fontFamily: T.font, transition: "all 0.3s ease",
-                    boxShadow: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? `0 4px 20px ${accentColor}33` : "none",
-                    opacity: (step === 0 ? source : step === 1 ? dest : selectedIds.length > 0) ? 1 : 0.5,
+                    boxShadow: canContinue ? `0 4px 20px ${accentColor}33` : "none",
+                    opacity: canContinue ? 1 : 0.5,
                   }}
                 >
-                  {step === 3 ? (transferResume ? "Resume Transfer →" : "Start Transfer →") : step === 2 ? `Review ${selectedIds.length} Playlist${selectedIds.length !== 1 ? "s" : ""} →` : "Continue →"}
+                  {continueLabel}
                 </button>
               </div>
             )}
@@ -1654,6 +2148,7 @@ export default function PlaylistTransferPro() {
                     <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                       <Badge color={T.ok}>{h.exact} found</Badge>
                       {h.fuzzy > 0 && <Badge color={T.warn}>{h.fuzzy} close</Badge>}
+                      {h.leftOut > 0 && <Badge color={T.textDim}>{h.leftOut} left out</Badge>}
                       {h.missing > 0 && <Badge color={T.bad}>{h.missing} missing</Badge>}
                     </div>
                   </div>

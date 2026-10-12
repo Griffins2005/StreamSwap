@@ -5,6 +5,22 @@
 // Used by spotify.js, youtube.js, apple-music.js and by App.jsx for UI (icons, labels).
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const LOCAL_ORIGIN = 'http://127.0.0.1:3000';
+
+/** Use the live site origin in production. Local dev stays on 127.0.0.1, which Spotify accepts. */
+function oauthRedirect(configured, path) {
+  const value = (configured || '').trim();
+  const local = `${LOCAL_ORIGIN}${path}`;
+  if (value && value !== local) return value;
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    const origin = window.location.origin;
+    if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
+      return `${origin}${path}`;
+    }
+  }
+  return value || local;
+}
+
 export const PLATFORMS = {
   spotify: {
     name: 'Spotify',
@@ -20,7 +36,7 @@ export const PLATFORMS = {
       'user-library-read',
     ],
     clientId: import.meta.env.SPOTIFY_CLIENT_ID || '',
-    redirectUri: import.meta.env.SPOTIFY_REDIRECT_URI || 'http://127.0.0.1:3000/callback/spotify',
+    redirectUri: oauthRedirect(import.meta.env.SPOTIFY_REDIRECT_URI, '/callback/spotify'),
   },
   apple: {
     name: 'Apple Music',
@@ -37,7 +53,7 @@ export const PLATFORMS = {
     scopes: ['https://www.googleapis.com/auth/youtube'],
     clientId: import.meta.env.GOOGLE_CLIENT_ID || '',
     clientSecret: (import.meta.env.GOOGLE_CLIENT_SECRET || '').trim(),
-    redirectUri: import.meta.env.GOOGLE_REDIRECT_URI || 'http://127.0.0.1:3000/callback/youtube',
+    redirectUri: oauthRedirect(import.meta.env.GOOGLE_REDIRECT_URI, '/callback/youtube'),
   },
   tidal: {
     name: 'Tidal',
@@ -47,7 +63,7 @@ export const PLATFORMS = {
     apiBase: 'https://openapi.tidal.com/v2',
     scopes: ['r_usr', 'w_usr'],
     clientId: import.meta.env.TIDAL_CLIENT_ID || '',
-    redirectUri: import.meta.env.TIDAL_REDIRECT_URI || 'http://127.0.0.1:3000/callback/tidal',
+    redirectUri: oauthRedirect(import.meta.env.TIDAL_REDIRECT_URI, '/callback/tidal'),
   },
   deezer: {
     name: 'Deezer',
@@ -58,7 +74,7 @@ export const PLATFORMS = {
     scopes: ['basic_access', 'email', 'manage_library', 'offline_access'],
     clientId: import.meta.env.DEEZER_APP_ID || '',
     clientSecret: (import.meta.env.DEEZER_APP_SECRET || '').trim(),
-    redirectUri: import.meta.env.DEEZER_REDIRECT_URI || 'http://127.0.0.1:3000/callback/deezer',
+    redirectUri: oauthRedirect(import.meta.env.DEEZER_REDIRECT_URI, '/callback/deezer'),
   },
 };
 
