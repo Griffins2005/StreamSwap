@@ -33,6 +33,26 @@ function isRateLimit(err, msg) {
   return err?.name === "RateLimitError" || err instanceof Error && err.name === "RateLimitError" || msg === "RATE_LIMIT";
 }
 
+function pauseAdvice(err) {
+  const sec = Number(err?.retryAfterSec) || 0;
+  // A short Retry-After already failed inside the request. Ask for a real pause.
+  if (sec > 60) {
+    const minutes = Math.ceil(sec / 60);
+    return `about ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+  }
+  return "about a minute";
+}
+
+function resumeDelaySec(err) {
+  const sec = Number(err?.retryAfterSec) || 0;
+  return sec > 60 ? sec : 60;
+}
+
+function songs(n) {
+  const value = Number(n) || 0;
+  return `${value} ${value === 1 ? "song" : "songs"}`;
+}
+
 function guide(title, handles, steps, extra = {}) {
   return { title, handles, steps, ...extra };
 }
@@ -130,38 +150,54 @@ export function explainUserError(err, context = {}) {
 
   if (err?.name === "YouTubeQuotaError" || kind === "YOUTUBE_SEARCH_QUOTA" || kind === "YOUTUBE_UNIT_QUOTA") {
     const adding = kind === "YOUTUBE_UNIT_QUOTA";
+    if (!adding && where === "preview") {
+      const ready = Number(context.ready) || 0;
+      const unchecked = Number(context.unchecked) || 0;
+      const later = unchecked > 0
+        ? `${songs(unchecked)} can wait until tomorrow.`
+        : "The rest can wait until tomorrow.";
+      return guide(
+        "YouTube is done looking up songs for today.",
+        ready > 0
+          ? `${songs(ready)} can still come along. ${later}`
+          : later
+      );
+    }
+    if (adding) {
+      const saved = Number(context.saved) || 0;
+      return guide(
+        "YouTube can't add any more songs today.",
+        saved > 0
+          ? `${songs(saved)} are already on the playlist. Come back tomorrow and start this move again. It picks up where it stopped.`
+          : "Come back tomorrow and start this move again. It picks up where it stopped."
+      );
+    }
     return guide(
-      adding
-        ? "YouTube's daily limit for adding songs is used up."
-        : "YouTube's daily limit for looking up songs is used up.",
-      "StreamSwap can still move songs it has already found. A new lookup uses one of 100 searches per day, and adding a song uses a separate YouTube limit.",
-      adding
-        ? [
-            "Songs already added stay on the YouTube playlist.",
-            "Come back tomorrow and start the move again. It continues where it stopped.",
-            "Songs already found do not use another search.",
-          ]
-        : [
-            "Move the songs already marked found. That does not use another search.",
-            "Leave the rest for tomorrow, when the search limit resets.",
-            "Start the lookup again then. Songs already found are reused.",
-          ]
+      "YouTube is done looking up songs for today.",
+      "Songs already matched can still be moved. Come back tomorrow for the ones still waiting."
     );
   }
 
   if (isRateLimit(err, msg)) {
-    const wait = err?.retryAfterSec ? `about ${err.retryAfterSec} seconds` : "a minute";
+    const wait = pauseAdvice(err);
+    const who = name === "This service" ? "The service" : name;
+    if (where === "preview") {
+      const resumeInSec = context.autoResume === false ? 0 : resumeDelaySec(err);
+      return guide(
+        `${who} needs a short break.`,
+        resumeInSec
+          ? "Nothing has been added yet. The songs already checked stay here, and this lookup continues on its own."
+          : `Nothing has been added yet. You can move the songs that are ready, or wait ${wait} and keep going with the ones that haven't been checked.`,
+        [],
+        resumeInSec ? { resumeInSec } : {}
+      );
+    }
     const saved = Number(context.saved) || 0;
     return guide(
-      `${name === "This service" ? "The service" : name} asked StreamSwap to slow down.`,
+      `${who} needs a short break.`,
       saved > 0
-        ? `${saved} songs already handled are saved. StreamSwap continues from there when you start again.`
-        : "Songs already handled are saved. StreamSwap continues from there when you start again.",
-      [
-        `Wait ${wait}, then try again.`,
-        "Start the same move again. It resumes instead of starting over.",
-        "If it stops again, wait a little longer before the next try.",
-      ]
+        ? `${songs(saved)} are already on the playlist. Wait ${wait}, then start this move again. It picks up where it stopped.`
+        : `Wait ${wait}, then start this move again. It picks up where it stopped.`
     );
   }
 

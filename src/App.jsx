@@ -494,6 +494,7 @@ export default function PlaylistTransferPro() {
   const [previewExpected, setPreviewExpected] = useState(0);
   const [budgetTick, setBudgetTick] = useState(0);
   const previewGen = useRef(0);
+  const autoResumeAttempts = useRef(0);
   const previewItemsRef = useRef([]);
   const honorPreviewRef = useRef(false);
   previewItemsRef.current = previewItems;
@@ -771,6 +772,7 @@ export default function PlaylistTransferPro() {
     const alive = () => previewGen.current === gen;
     const already = keep ? previewItemsRef.current.slice() : [];
     if (!keep) {
+      autoResumeAttempts.current = 0;
       setPreviewItems([]);
       setPreviewNote(null);
       setPreviewFilter("all");
@@ -868,12 +870,28 @@ export default function PlaylistTransferPro() {
         try {
           match = await searchDestination(dest, destToken, track);
         } catch (err) {
-          note = explainUserError(err, { where: "preview", platform: dest });
+          const rateLimited = err?.name === "RateLimitError";
+          let autoResume = false;
+          if (rateLimited) {
+            const searchesLeft = dest !== "youtube" || getYouTubeSearchBudget().remaining > 0;
+            autoResume = autoResumeAttempts.current < 3 && searchesLeft;
+            autoResumeAttempts.current += 1;
+          } else {
+            autoResumeAttempts.current = 0;
+          }
+          note = explainUserError(err, {
+            where: "preview",
+            platform: dest,
+            ready: items.filter((item) => item.included).length,
+            unchecked: Math.max(0, queue.length - items.length),
+            autoResume,
+          });
           if (dest === "youtube") setBudgetTick((n) => n + 1);
           break;
         }
         if (!alive()) return;
         if (dest === "youtube") setBudgetTick((n) => n + 1);
+        autoResumeAttempts.current = 0;
         lookedUp += 1;
         setProgress(Math.round((lookedUp / queue.length) * 100));
         items.push(buildPreviewItem({
@@ -1391,6 +1409,29 @@ export default function PlaylistTransferPro() {
     step === 3 ? true :
     step === 4 ? previewPhase === "ready" && previewSummary.included > 0 :
     false;
+  const lookupOpen = previewPhase === "ready"
+    && previewExpected > previewItems.length
+    && (!youtubeBudget || youtubeBudget.remaining > 0);
+  const resumeInSec = previewNote && typeof previewNote === "object" ? Number(previewNote.resumeInSec) || 0 : 0;
+  const [resumeLeft, setResumeLeft] = useState(0);
+  useEffect(() => {
+    if (step !== 4 || !lookupOpen || !resumeInSec) {
+      setResumeLeft(0);
+      return;
+    }
+    const ends = Date.now() + resumeInSec * 1000;
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
+      setResumeLeft((prev) => (prev === left ? prev : left));
+    };
+    tick();
+    const interval = setInterval(tick, 250);
+    const timeout = setTimeout(() => runPreview({ keep: true }), resumeInSec * 1000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [step, lookupOpen, resumeInSec, runPreview]);
   const continueLabel =
     step === 4
       ? previewPhase === "running"
@@ -1401,8 +1442,8 @@ export default function PlaylistTransferPro() {
       : step === 3
         ? transferResume
           ? "Resume →"
-          : previewPhase === "ready" && previewItems.length > 0 && previewItems.length < previewExpected
-            ? "Look up the rest →"
+          : previewPhase === "ready" && previewItems.length > 0 && lookupOpen
+            ? "Keep going →"
             : previewPhase === "ready" && previewItems.length > 0
               ? "Review matches →"
               : "Preview matches →"
@@ -1656,9 +1697,14 @@ export default function PlaylistTransferPro() {
                   </div>
                 )}
 
-                {youtubeBudget && (
+                {youtubeBudget && youtubeBudget.remaining > 0 && (
                   <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.youtube.color}10`, border: `1px solid ${PLATFORMS.youtube.color}33`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
-                    YouTube searches left today: <strong>{youtubeBudget.remaining}</strong> of {youtubeBudget.limit}. Each new song uses one search while we look it up. Moving it afterward reuses that result.
+                    YouTube can look up <strong>{youtubeBudget.remaining}</strong> more {youtubeBudget.remaining === 1 ? "song" : "songs"} today.
+                  </div>
+                )}
+                {youtubeBudget && youtubeBudget.remaining === 0 && (
+                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.youtube.color}10`, border: `1px solid ${PLATFORMS.youtube.color}33`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
+                    YouTube is done looking up songs for today. Songs already matched can still be moved.
                   </div>
                 )}
 
@@ -1766,13 +1812,18 @@ export default function PlaylistTransferPro() {
                   </div>
                 )}
 
-                {youtubeBudget && (
+                {youtubeBudget && youtubeBudget.remaining > 0 && (
                   <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: T.paper, border: `1px solid ${T.border}`, fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
-                    YouTube searches left today: <strong style={{ color: T.text }}>{youtubeBudget.remaining}</strong> of {youtubeBudget.limit}. Songs already found do not use another search.
+                    YouTube can look up <strong style={{ color: T.text }}>{youtubeBudget.remaining}</strong> more {youtubeBudget.remaining === 1 ? "song" : "songs"} today.
                   </div>
                 )}
 
-                <Guide guide={previewNote} style={{ marginBottom: 16 }} />
+                <Guide guide={previewNote} style={{ marginBottom: resumeLeft > 0 ? 8 : 16 }} />
+                {resumeLeft > 0 && (
+                  <p style={{ margin: "0 0 16px", fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
+                    Checking again in {resumeLeft} {resumeLeft === 1 ? "second" : "seconds"}.
+                  </p>
+                )}
                 <Guide guide={flowError} style={{ marginBottom: 16 }} />
                 <ReconnectBar
                   flowError={flowError}
@@ -1821,15 +1872,20 @@ export default function PlaylistTransferPro() {
                       )}
                     </div>
 
-                    {previewPhase === "ready" && previewExpected > previewItems.length && (
-                      <button
-                        type="button"
-                        onClick={() => runPreview({ keep: true })}
-                        className="btn-hover"
-                        style={{ marginBottom: 12, background: "none", border: "none", color: accentColor, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font, padding: 0 }}
-                      >
-                        Look up the rest
-                      </button>
+                    {lookupOpen && (
+                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14, padding: "12px 14px", borderRadius: T.radiusSm, background: T.paper, border: `1px solid ${T.border}` }}>
+                        <div style={{ minWidth: 0, fontSize: 14, color: T.textMuted, lineHeight: 1.45 }}>
+                          {countLabel(previewExpected - previewItems.length, "song")} {previewExpected - previewItems.length === 1 ? "hasn't" : "haven't"} been checked yet.
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => runPreview({ keep: true })}
+                          className="btn-hover"
+                          style={{ flexShrink: 0, background: accentColor, border: "none", borderRadius: T.radiusSm, padding: "10px 14px", color: "#fffdf8", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
+                        >
+                          Keep going
+                        </button>
+                      </div>
                     )}
 
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 420, overflowY: "auto" }}>
@@ -2088,7 +2144,7 @@ export default function PlaylistTransferPro() {
                         honorPreviewRef.current = false;
                         setStep(5);
                         runTransfer();
-                      } else if (previewPhase === "ready" && previewItems.length > 0 && previewItems.length < previewExpected) {
+                      } else if (lookupOpen) {
                         setStep(4);
                         runPreview({ keep: true });
                       } else if (previewPhase === "ready" && previewItems.length > 0) {
