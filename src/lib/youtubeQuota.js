@@ -8,9 +8,10 @@ const CACHE_KEY = 'streamswap_yt_match_cache';
 const CACHE_MAX = 2000;
 
 export class YouTubeQuotaError extends Error {
-  constructor() {
-    super('YOUTUBE_SEARCH_QUOTA');
+  constructor(kind = 'YOUTUBE_SEARCH_QUOTA') {
+    super(kind);
     this.name = 'YouTubeQuotaError';
+    this.kind = kind;
   }
 }
 

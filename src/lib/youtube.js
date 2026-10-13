@@ -302,8 +302,35 @@ export async function getYouTubePlaylistById(accessToken, playlistId) {
     id: pl.id,
     name: pl.snippet?.title || 'Untitled',
     trackCount: pl.contentDetails?.itemCount ?? 0,
+    channelId: pl.snippet?.channelId || null,
     platform: 'youtube',
   };
+}
+
+/** Channel id for the signed-in user, used to see if a playlist is already theirs. */
+export async function getYouTubeMyChannelId(accessToken) {
+  const data = await youtubeFetch('/channels', accessToken, { part: 'id', mine: 'true', maxResults: '1' });
+  return data.items?.[0]?.id || null;
+}
+
+/**
+ * Create a private playlist on the signed-in channel and add the videos.
+ * Stops early if YouTube's add limit is hit and returns how many were saved.
+ */
+export async function copyYouTubePlaylistToLibrary(accessToken, { name, tracks }) {
+  const id = await createYouTubePlaylist(accessToken, name, 'Saved from a link via StreamSwap');
+  const videoIds = (tracks || []).map((track) => track.videoId).filter(Boolean);
+  let saved = 0;
+  try {
+    for (const videoId of videoIds) {
+      await addTracksToYouTubePlaylist(accessToken, id, [videoId]);
+      saved += 1;
+    }
+  } catch (err) {
+    if (saved > 0) return { id, saved, total: videoIds.length, limited: true };
+    throw err;
+  }
+  return { id, saved, total: videoIds.length, limited: false };
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   getSpotifyPlaylists,
   getSpotifyPlaylistById,
   getSpotifyPlaylistTracks,
+  followSpotifyPlaylist,
   getSpotifyUserProfile,
   createSpotifyPlaylist,
   addTracksToSpotifyPlaylist,
@@ -44,11 +45,12 @@ import {
   searchDeezerTrack,
 } from "./lib/deezer";
 import { parsePublicPlaylistUrl } from "./lib/publicPlaylist";
+import { explainUserError } from "./lib/userErrors";
+import { saveLoadedPlaylist } from "./lib/saveToLibrary";
 import { findDuplicates } from "./lib/matching";
 import { buildPreviewItem, matchFromSaved, savedMatchFromPreview, summarizePreview } from "./lib/matchPreview";
 import { parsePlaylistFile } from "./lib/import-export";
 import { useTransferHistory } from "./hooks/useTransferHistory";
-import { RateLimitError } from "./lib/rateLimit";
 import { getYouTubeSearchBudget } from "./lib/youtubeQuota";
 import { checkpointSignature, clearCheckpoint, loadCheckpoint, saveCheckpoint } from "./lib/transferCheckpoint";
 /* ─────────────────────────────────────────────
@@ -191,26 +193,43 @@ const css = `
   }
 `;
 
-// Don't show technical error text to users; show a friendly message instead
-function isDeveloperOnlyError(msg) {
-  if (!msg || typeof msg !== "string") return false;
-  const s = msg.toLowerCase();
-  return /\.env|api key|client id|client_secret|credentials|configured|developer|oauth consent|cloud console|redirect uri|scope/i.test(s);
+function ReconnectBar({ flowError, showSpotify, showTidal, onSpotify, onTidal }) {
+  const spotify = showSpotify || flowError?.reconnect === "spotify";
+  const tidal = showTidal || flowError?.reconnect === "tidal";
+  if (!spotify && !tidal) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+      {spotify && (
+        <button type="button" onClick={onSpotify} className="btn-hover" style={{ width: "100%", background: PLATFORMS.spotify.color, color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}>
+          Reconnect Spotify
+        </button>
+      )}
+      {tidal && (
+        <button type="button" onClick={onTidal} className="btn-hover" style={{ width: "100%", background: PLATFORMS.tidal.color, color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}>
+          Reconnect Tidal
+        </button>
+      )}
+    </div>
+  );
 }
 
-function explainFailure(err) {
-  if (err?.name === "YouTubeQuotaError") {
-    const budget = getYouTubeSearchBudget();
-    return err.message === "YOUTUBE_UNIT_QUOTA"
-      ? "YouTube’s daily limit is used up. You can move the songs already found, and look up the rest tomorrow."
-      : `YouTube searches are used up (${budget.used} of ${budget.limit} today). Songs already found can still be moved. The rest can be looked up tomorrow.`;
-  }
-  if (err instanceof RateLimitError || err?.name === "RateLimitError") {
-    return `The service asked us to slow down. Songs already found can still be moved. Try the rest again${err.retryAfterSec ? ` in about ${err.retryAfterSec}s` : " in a little while"}.`;
-  }
-  const msg = err?.message != null ? String(err.message) : String(err || "");
-  if (isDeveloperOnlyError(msg)) return "Something went wrong. Try signing in again.";
-  return msg || "Could not look up these songs.";
+function Guide({ guide, style }) {
+  if (!guide) return null;
+  const data = typeof guide === "string" ? { title: guide } : guide;
+  if (!data.title && !data.handles && !data.steps?.length) return null;
+  return (
+    <div style={{ padding: "14px 16px", borderRadius: T.radiusSm, background: "#fbf6ee", border: `1px solid ${T.border}`, fontSize: 13, color: T.text, lineHeight: 1.5, ...style }}>
+      {data.title && <div style={{ fontWeight: 700, marginBottom: data.handles || data.steps?.length ? 6 : 0 }}>{data.title}</div>}
+      {data.handles && <p style={{ margin: "0 0 8px", color: T.textMuted }}>{data.handles}</p>}
+      {data.steps?.length > 0 && (
+        <ol style={{ margin: 0, paddingLeft: 18 }}>
+          {data.steps.map((step) => (
+            <li key={step} style={{ marginTop: 4 }}>{step}</li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
 }
 
 const FLOW_LABELS = ["From", "To", "Choose", "Check", "Preview", "Move", "Done"];
@@ -503,7 +522,11 @@ export default function PlaylistTransferPro() {
   const [publicImportPlaylist, setPublicImportPlaylist] = useState(null);
   const [publicImportUrl, setPublicImportUrl] = useState("");
   const [publicImportLoading, setPublicImportLoading] = useState(false);
-  const [publicImportError, setPublicImportError] = useState("");
+  const [publicImportError, setPublicImportError] = useState(null);
+  const [linkNote, setLinkNote] = useState(null);
+  const [playlistsError, setPlaylistsError] = useState(null);
+  const [flowError, setFlowError] = useState(null);
+  const [importError, setImportError] = useState(null);
 
   // Show all platforms; those without credentials show an "unavailable" modal when clicked
   const availablePlatforms = useMemo(() => ["spotify", "youtube", "tidal", "deezer", "apple"], []);
@@ -536,7 +559,7 @@ export default function PlaylistTransferPro() {
     previewGen.current += 1;
     setPreviewItems([]);
     setPreviewPhase("idle");
-    setPreviewNote("");
+    setPreviewNote(null);
     setPreviewFilter("all");
     setPreviewExpected(0);
   }, [selectionKey]);
@@ -573,82 +596,38 @@ export default function PlaylistTransferPro() {
   useEffect(() => {
     if (step !== 2 || !source) return;
     if (publicImportPlaylist) return; // keep playlists from "Load playlist" URL
-    if (source === "spotify" && isConnected("spotify")) {
-      const token = getToken("spotify");
+    const loaders = {
+      spotify: getSpotifyPlaylists,
+      youtube: getYouTubePlaylists,
+      tidal: getTidalPlaylists,
+      deezer: getDeezerPlaylists,
+    };
+    const load = loaders[source];
+    if (load && isConnected(source)) {
+      const token = getToken(source);
       if (!token?.accessToken) return;
+      setPlaylistsError(null);
       setPlaylistsLoading(true);
-      getSpotifyPlaylists(token.accessToken)
+      load(token.accessToken)
         .then((list) => {
           setPlaylists(
             list.map((pl) => ({
               ...pl,
               emoji: "🎵",
               duration: `${pl.trackCount} tracks`,
-              tracks: [],
+              tracks: pl.tracks || [],
             }))
           );
         })
-        .catch(() => setPlaylists([]))
-        .finally(() => setPlaylistsLoading(false));
-      return;
-    }
-    if (source === "youtube" && isConnected("youtube")) {
-      const token = getToken("youtube");
-      if (!token?.accessToken) return;
-      setPlaylistsLoading(true);
-      getYouTubePlaylists(token.accessToken)
-        .then((list) => {
-          setPlaylists(
-            list.map((pl) => ({
-              ...pl,
-              emoji: "🎵",
-              duration: `${pl.trackCount} tracks`,
-              tracks: [],
-            }))
-          );
+        .catch((err) => {
+          setPlaylists([]);
+          setPlaylistsError(explainUserError(err, { where: "library", platform: source }));
         })
-        .catch(() => setPlaylists([]))
-        .finally(() => setPlaylistsLoading(false));
-      return;
-    }
-    if (source === "tidal" && isConnected("tidal")) {
-      const token = getToken("tidal");
-      if (!token?.accessToken) return;
-      setPlaylistsLoading(true);
-      getTidalPlaylists(token.accessToken)
-        .then((list) => {
-          setPlaylists(
-            list.map((pl) => ({
-              ...pl,
-              emoji: "🎵",
-              duration: `${pl.trackCount} tracks`,
-              tracks: [],
-            }))
-          );
-        })
-        .catch(() => setPlaylists([]))
-        .finally(() => setPlaylistsLoading(false));
-      return;
-    }
-    if (source === "deezer" && isConnected("deezer")) {
-      const token = getToken("deezer");
-      if (!token?.accessToken) return;
-      setPlaylistsLoading(true);
-      getDeezerPlaylists(token.accessToken)
-        .then((list) => {
-          setPlaylists(
-            list.map((pl) => ({
-              ...pl,
-              emoji: "🎵",
-              duration: `${pl.trackCount} tracks`,
-            }))
-          );
-        })
-        .catch(() => setPlaylists([]))
         .finally(() => setPlaylistsLoading(false));
       return;
     }
     setPlaylists([]);
+    setPlaylistsError(null);
   }, [step, source, publicImportPlaylist, isConnected("spotify"), isConnected("youtube"), isConnected("tidal"), isConnected("deezer")]);
 
   // Reset playlists/selection when source changes (e.g. user picked a different platform card)
@@ -662,11 +641,31 @@ export default function PlaylistTransferPro() {
   // Load a public playlist from URL (Deezer: no auth; Spotify/YouTube: require connected)
   const loadPublicPlaylist = useCallback(async () => {
     const parsed = parsePublicPlaylistUrl(publicImportUrl);
-    setPublicImportError("");
+    setPublicImportError(null);
+    setLinkNote(null);
     if (!parsed) {
-      setPublicImportError("Unsupported or invalid link. Use a Spotify, YouTube, or Deezer playlist URL.");
+      setPublicImportError(explainUserError("UNSUPPORTED_LINK", { where: "link" }));
       return;
     }
+    const freshAccess = async (platform) => {
+      let data = getToken(platform);
+      if (!data?.accessToken) return null;
+      let valid = data;
+      if (platform === "spotify") valid = await getValidSpotifyToken(data);
+      else if (platform === "youtube") valid = await getValidYouTubeToken(data);
+      else if (platform === "deezer") valid = await getValidDeezerToken(data);
+      if (!valid?.accessToken) return null;
+      setToken(platform, valid);
+      return valid.accessToken;
+    };
+    const acceptLoaded = (platform, pl, guide) => {
+      setPlaylists([pl]);
+      setSource(platform);
+      setSelectedIds([pl.id]);
+      setPublicImportPlaylist({ platform, playlist: pl });
+      setLinkNote(guide);
+      setStep(1);
+    };
     setPublicImportLoading(true);
     try {
       if (parsed.platform === "deezer") {
@@ -680,62 +679,79 @@ export default function PlaylistTransferPro() {
           duration: `${data.tracks.length} tracks`,
           platform: "deezer",
         };
-        setPlaylists([pl]);
-        setSource("deezer");
-        setSelectedIds([pl.id]);
-        setPublicImportPlaylist({ platform: "deezer", playlist: pl });
-        setStep(1);
+        const access = isConnected("deezer") ? await freshAccess("deezer") : null;
+        const saved = await saveLoadedPlaylist("deezer", access, pl);
+        acceptLoaded("deezer", saved.playlist, saved.guide);
       } else if (parsed.platform === "spotify") {
-        const token = getToken("spotify");
-        if (!token?.accessToken || !isConnected("spotify")) {
-          setPublicImportError("Connect Spotify first to import a public Spotify playlist.");
+        if (!isConnected("spotify")) {
+          setPublicImportError(explainUserError("NEED_SIGNIN", { where: "link", platform: "spotify" }));
           return;
         }
-        const meta = await getSpotifyPlaylistById(token.accessToken, parsed.playlistId);
-        const tracks = await getSpotifyPlaylistTracks(token.accessToken, parsed.playlistId);
+        const access = await freshAccess("spotify");
+        if (!access) {
+          setPublicImportError(explainUserError("TOKEN_EXPIRED", { where: "link", platform: "spotify" }));
+          return;
+        }
+        const meta = await getSpotifyPlaylistById(access, parsed.playlistId);
+        const tracks = await getSpotifyPlaylistTracks(access, parsed.playlistId);
         const pl = {
           id: meta.id,
           name: meta.name,
+          ownerId: meta.ownerId,
           trackCount: tracks.length,
           tracks,
           emoji: "🎵",
           duration: `${tracks.length} tracks`,
           platform: "spotify",
         };
-        setPlaylists([pl]);
-        setSource("spotify");
-        setSelectedIds([pl.id]);
-        setPublicImportPlaylist({ platform: "spotify", playlist: pl });
-        setStep(1);
+        const saved = await saveLoadedPlaylist("spotify", access, pl);
+        acceptLoaded("spotify", saved.playlist, saved.guide);
       } else if (parsed.platform === "youtube") {
-        const token = getToken("youtube");
-        if (!token?.accessToken || !isConnected("youtube")) {
-          setPublicImportError("Connect YouTube first to import a public YouTube playlist.");
+        if (!isConnected("youtube")) {
+          setPublicImportError(explainUserError("NEED_SIGNIN", { where: "link", platform: "youtube" }));
           return;
         }
-        const meta = await getYouTubePlaylistById(token.accessToken, parsed.playlistId);
-        const tracks = await getYouTubePlaylistTracks(token.accessToken, parsed.playlistId);
+        const access = await freshAccess("youtube");
+        if (!access) {
+          setPublicImportError(explainUserError("TOKEN_EXPIRED", { where: "link", platform: "youtube" }));
+          return;
+        }
+        const meta = await getYouTubePlaylistById(access, parsed.playlistId);
+        const tracks = await getYouTubePlaylistTracks(access, parsed.playlistId);
         const pl = {
           id: meta.id,
           name: meta.name,
+          channelId: meta.channelId,
           trackCount: tracks.length,
           tracks,
           emoji: "🎵",
           duration: `${tracks.length} tracks`,
           platform: "youtube",
         };
-        setPlaylists([pl]);
-        setSource("youtube");
-        setSelectedIds([pl.id]);
-        setPublicImportPlaylist({ platform: "youtube", playlist: pl });
-        setStep(1);
+        const saved = await saveLoadedPlaylist("youtube", access, pl);
+        acceptLoaded("youtube", saved.playlist, saved.guide);
       }
     } catch (err) {
-      setPublicImportError(err?.message || "Failed to load playlist.");
+      const missing = /resource not found|not found|not accessible|\b404\b|\b403\b|forbidden/i.test(String(err?.message || ""));
+      if (parsed.platform === "spotify" && missing) {
+        try {
+          const access = await freshAccess("spotify");
+          if (!access) {
+            setPublicImportError(explainUserError("TOKEN_EXPIRED", { where: "link", platform: "spotify" }));
+            return;
+          }
+          await followSpotifyPlaylist(access, parsed.playlistId);
+          setPublicImportError(explainUserError("SAVED_FOLLOW", { where: "link", platform: "spotify" }));
+        } catch {
+          setPublicImportError(explainUserError("SAVE_REFUSED", { where: "link", platform: "spotify" }));
+        }
+      } else {
+        setPublicImportError(explainUserError(err, { where: "link", platform: parsed.platform }));
+      }
     } finally {
       setPublicImportLoading(false);
     }
-  }, [publicImportUrl, getToken, isConnected]);
+  }, [publicImportUrl, getToken, setToken, isConnected]);
 
   // Toggle playlist selection
   const togglePlaylist = (id) => {
@@ -750,12 +766,13 @@ export default function PlaylistTransferPro() {
   }, [transferGoToStep5, step]);
 
   const runPreview = useCallback(async ({ keep = false } = {}) => {
+    setFlowError(null);
     const gen = ++previewGen.current;
     const alive = () => previewGen.current === gen;
     const already = keep ? previewItemsRef.current.slice() : [];
     if (!keep) {
       setPreviewItems([]);
-      setPreviewNote("");
+      setPreviewNote(null);
       setPreviewFilter("all");
     }
     setPreviewPhase("running");
@@ -778,7 +795,7 @@ export default function PlaylistTransferPro() {
     const sourceOk = (source === "spotify" || source === "youtube" || source === "tidal" || source === "deezer") && (isConnected(source) || publicImportPlaylist);
     if (!sourceOk || !destOk) {
       if (!alive()) return;
-      setPreviewNote("Connect both services before looking up songs.");
+      setPreviewNote(explainUserError("NEED_SIGNIN", { where: "preview", platform: !isConnected(source) ? source : dest }));
       setPreviewPhase("ready");
       return;
     }
@@ -798,7 +815,7 @@ export default function PlaylistTransferPro() {
       const destToken = destTokenData?.accessToken;
       if (!destToken || (!publicImportPlaylist && !sourceToken)) {
         if (!alive()) return;
-        setPreviewNote("Sign in again, then preview the matches.");
+        setPreviewNote(explainUserError("TOKEN_EXPIRED", { where: "preview", platform: !sourceToken ? source : dest }));
         setPreviewPhase("ready");
         return;
       }
@@ -851,7 +868,7 @@ export default function PlaylistTransferPro() {
         try {
           match = await searchDestination(dest, destToken, track);
         } catch (err) {
-          note = explainFailure(err);
+          note = explainUserError(err, { where: "preview", platform: dest });
           if (dest === "youtube") setBudgetTick((n) => n + 1);
           break;
         }
@@ -877,13 +894,14 @@ export default function PlaylistTransferPro() {
       setPreviewPhase("ready");
     } catch (err) {
       if (!alive()) return;
-      setPreviewNote(explainFailure(err));
+      setPreviewNote(explainUserError(err, { where: "preview", platform: dest }));
       setPreviewPhase("ready");
     }
   }, [source, dest, selectedPlaylists, publicImportPlaylist, getToken, setToken, isConnected]);
 
   // Run transfer: called from the preview or resume button so we use current state.
   const runTransfer = useCallback(async () => {
+    setFlowError(null);
     const backStep = honorPreviewRef.current ? 4 : 3;
     const destOk = (dest === "spotify" || dest === "youtube" || dest === "tidal" || dest === "deezer") && isConnected(dest);
     const sourceOk = (source === "spotify" || source === "youtube" || source === "tidal" || source === "deezer") && (isConnected(source) || publicImportPlaylist);
@@ -893,7 +911,9 @@ export default function PlaylistTransferPro() {
       let sourceTokenData = publicImportPlaylist ? null : getToken(source);
       let destTokenData = getToken(dest);
       if (!destTokenData) {
-        setTransferLog((prev) => [...prev, { type: "error", text: "Missing connection. Please connect the destination." }]);
+        const guide = explainUserError("NEED_SIGNIN", { where: "transfer", platform: dest });
+        setFlowError(guide);
+        setTransferLog((prev) => [...prev, { type: "error", text: guide.title }]);
         setStep(backStep);
         return;
       }
@@ -982,20 +1002,16 @@ export default function PlaylistTransferPro() {
         let currentDestToken = destToken; // mutable so we can refresh on 401 mid-transfer
         destTokenRef.current = currentDestToken;
         if (!destToken) {
-          setTransferLog((prev) => [...prev, { type: "error", text: "Destination token missing. Connect the destination and retry." }]);
+          const guide = explainUserError("TOKEN_EXPIRED", { where: "transfer", platform: dest });
+          setFlowError(guide);
+          setTransferLog((prev) => [...prev, { type: "error", text: guide.title }]);
           setStep(backStep);
           return;
         }
         if (!publicImportPlaylist && !sourceToken) {
-          const platforms = [];
-          if (source === "spotify" || dest === "spotify") platforms.push("Spotify");
-          if (source === "youtube" || dest === "youtube") platforms.push("YouTube");
-          if (source === "tidal" || dest === "tidal") platforms.push("Tidal");
-          if (source === "deezer" || dest === "deezer") platforms.push("Deezer");
-          const reauthMsg = platforms.length
-            ? `${platforms.join(" / ")} token expired or invalid. Sign out of the listed platform(s) in the app, sign in again, then retry the transfer.`
-            : "Could not get valid tokens.";
-          setTransferLog((prev) => [...prev, { type: "error", text: reauthMsg }]);
+          const guide = explainUserError("TOKEN_EXPIRED", { where: "transfer", platform: source });
+          setFlowError(guide);
+          setTransferLog((prev) => [...prev, { type: "error", text: guide.title }]);
           setStep(backStep);
           return;
         }
@@ -1225,32 +1241,28 @@ export default function PlaylistTransferPro() {
         try { await flushPending(); } catch { /* keep the original error */ }
         if (checkpoint) saveCheckpoint(checkpoint);
         setMatchResults({ ...allResults });
-        let msg = err?.message != null ? String(err.message) : String(err);
-        if (err instanceof RateLimitError || err?.name === "RateLimitError") {
-          const saved = Object.keys(checkpoint?.done || {}).length;
-          msg = `Rate limit reached. ${saved} tracks are saved. Start the transfer again to resume${err.retryAfterSec ? ` after about ${err.retryAfterSec}s` : ""}.`;
-        } else if (err?.name === "YouTubeQuotaError") {
-          const budget = getYouTubeSearchBudget();
-          msg = err.message === "YOUTUBE_UNIT_QUOTA"
-            ? "YouTube's daily unit quota is used up. Tracks already added were saved. Start again tomorrow to resume."
-            : `YouTube search limit reached (${budget.used} of ${budget.limit} today). Tracks already added were saved. Start again to resume; cached songs do not use another search.`;
-        } else if (msg.startsWith("SPOTIFY_NEED_PERMISSION")) {
-          setShowSpotifyReconnectTip(true);
-          msg = "Spotify needs permissions. Reconnect and allow.";
-        } else if (msg.startsWith("TIDAL_NEED_PERMISSION")) {
-          setShowTidalReconnectTip(true);
-          msg = "Tidal needs permissions. Reconnect and allow.";
-        } else if (isDeveloperOnlyError(msg)) {
-          msg = "Something went wrong. Try signing in again or try again later.";
-        }
-        setTransferLog((prev) => [...prev, { type: "error", text: msg || "Transfer failed" }]);
+        const guide = explainUserError(err, {
+          where: "transfer",
+          platform: dest,
+          saved: Object.keys(checkpoint?.done || {}).length,
+        });
+        if (guide.reconnect === "spotify") setShowSpotifyReconnectTip(true);
+        if (guide.reconnect === "tidal") setShowTidalReconnectTip(true);
+        setFlowError(guide);
+        setTransferLog((prev) => [
+          ...prev,
+          { type: "error", text: guide.title },
+          ...(guide.steps || []).map((step) => ({ type: "error", text: step })),
+        ]);
         setStep(backStep);
       }
       return;
     }
 
     // Only real transfers: require both source and destination connected
-    setTransferLog((prev) => [...prev, { type: "error", text: "Connect both source and destination to transfer. Only real transfers are supported." }]);
+    const guide = explainUserError("NEED_SIGNIN", { where: "transfer", platform: dest || source });
+    setFlowError(guide);
+    setTransferLog((prev) => [...prev, { type: "error", text: guide.title }]);
     setStep(backStep);
   }, [source, dest, selectedPlaylists, publicImportPlaylist, getToken, setToken, isConnected, addEntry]);
 
@@ -1320,10 +1332,12 @@ export default function PlaylistTransferPro() {
     reader.onload = (ev) => {
       try {
         const { format, playlists } = parsePlaylistFile(file.name, ev.target.result);
+        setImportError(null);
         setImportData(playlists);
         setImportFormat(format);
       } catch (err) {
         setImportData(null);
+        setImportError(explainUserError(err, { where: "file" }));
       }
     };
     reader.readAsText(file);
@@ -1345,13 +1359,17 @@ export default function PlaylistTransferPro() {
     setLastTransferPlaylists([]);
     setPreviewItems([]);
     setPreviewPhase("idle");
-    setPreviewNote("");
+    setPreviewNote(null);
     setPreviewFilter("all");
     setPreviewExpected(0);
     previewGen.current += 1;
     setPublicImportPlaylist(null);
     setPublicImportUrl("");
-    setPublicImportError("");
+    setPublicImportError(null);
+    setLinkNote(null);
+    setPlaylistsError(null);
+    setFlowError(null);
+    setImportError(null);
   };
 
   // Computed match stats for complete step
@@ -1464,7 +1482,7 @@ export default function PlaylistTransferPro() {
                       key={id}
                       id={id}
                       selected={source === id}
-                      onClick={(pid) => { setPublicImportPlaylist(null); setSource(pid); if (!isConnected(pid)) connectPlatform(pid); }}
+                      onClick={(pid) => { setPublicImportPlaylist(null); setLinkNote(null); setSource(pid); if (!isConnected(pid)) connectPlatform(pid); }}
                       connected={isConnected(id)}
                       onDisconnect={(pid) => { disconnect(pid); if (source === pid) setSource(null); if (dest === pid) setDest(null); }}
                     />
@@ -1482,7 +1500,7 @@ export default function PlaylistTransferPro() {
                       type="url"
                       placeholder="https://open.spotify.com/playlist/… or youtube.com/playlist?list=… or deezer.com/…/playlist/…"
                       value={publicImportUrl}
-                      onChange={(e) => { setPublicImportUrl(e.target.value); setPublicImportError(""); }}
+                      onChange={(e) => { setPublicImportUrl(e.target.value); setPublicImportError(null); }}
                       style={{
                         flex: 1, minWidth: 200, padding: "10px 14px", borderRadius: T.radiusSm, border: `1px solid ${T.border}`,
                         background: T.surface, color: T.text, fontSize: 13, fontFamily: T.font,
@@ -1501,7 +1519,7 @@ export default function PlaylistTransferPro() {
                       {publicImportLoading ? "Loading…" : "Load playlist"}
                     </button>
                   </div>
-                  {publicImportError && <p style={{ fontSize: 12, color: T.bad, marginTop: 8 }}>{publicImportError}</p>}
+                  <Guide guide={publicImportError} style={{ marginTop: 12 }} />
                 </div>
               </div>
             )}
@@ -1511,6 +1529,14 @@ export default function PlaylistTransferPro() {
               <div className="fade-up">
                 <h2 className="step-title" style={{ marginBottom: 8 }}>Where should it go?</h2>
                 <p style={{ fontSize: 15, color: T.textMuted, marginBottom: 22, lineHeight: 1.5 }}>Pick the service that should receive these playlists. The one you started from stays put.</p>
+                <Guide guide={linkNote} style={{ marginBottom: 16 }} />
+                <ReconnectBar
+                  flowError={linkNote}
+                  showSpotify={linkNote?.reconnect === "spotify"}
+                  showTidal={false}
+                  onSpotify={() => { clearSpotifyAuthState(); disconnect("spotify"); setLinkNote(null); initiateSpotifyAuth(); }}
+                  onTidal={() => {}}
+                />
                 <div className="platform-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(availablePlatforms.length, 5)}, 1fr)`, gap: 10 }}>
                   {availablePlatforms.map((id) => (
                     <PlatformCard
@@ -1539,8 +1565,9 @@ export default function PlaylistTransferPro() {
                   )}
                 </div>
                 <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 16 }}>
-                  {playlistsLoading ? "Loading playlists..." : playlists.length === 0 ? `No playlists on ${PLATFORMS[source].name} yet.` : `${countLabel(playlists.length, "playlist")} on ${PLATFORMS[source].name}`}
+                  {playlistsLoading ? "Loading playlists..." : playlistsError ? "Playlists could not be loaded." : playlists.length === 0 ? `No playlists on ${PLATFORMS[source].name} yet.` : `${countLabel(playlists.length, "playlist")} on ${PLATFORMS[source].name}`}
                 </p>
+                <Guide guide={playlistsError} style={{ marginBottom: 16 }} />
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                   {playlistsLoading ? (
@@ -1632,33 +1659,14 @@ export default function PlaylistTransferPro() {
                   </div>
                 )}
 
-                {showSpotifyReconnectTip && dest === "spotify" && (
-                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.spotify.color}12`, border: `1px solid ${PLATFORMS.spotify.color}30`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
-                    <strong style={{ color: PLATFORMS.spotify.color }}>Spotify needs permissions.</strong> Reconnect and allow.
-                    <button
-                      type="button"
-                      onClick={() => { clearSpotifyAuthState(); disconnect("spotify"); setShowSpotifyReconnectTip(false); initiateSpotifyAuth(); }}
-                      className="btn-hover"
-                      style={{ width: "100%", marginTop: 10, background: PLATFORMS.spotify.color, color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
-                    >
-                      Reconnect Spotify
-                    </button>
-                  </div>
-                )}
-
-                {showTidalReconnectTip && (dest === "tidal" || source === "tidal") && (
-                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: `${PLATFORMS.tidal.color}12`, border: `1px solid ${PLATFORMS.tidal.color}30`, fontSize: 12, color: T.text, lineHeight: 1.5 }}>
-                    <strong style={{ color: PLATFORMS.tidal.color }}>Tidal needs permissions.</strong> Reconnect and allow.
-                    <button
-                      type="button"
-                      onClick={() => { clearTidalAuthState(); disconnect("tidal"); setShowTidalReconnectTip(false); initiateTidalAuth(); }}
-                      className="btn-hover"
-                      style={{ width: "100%", marginTop: 10, background: PLATFORMS.tidal.color, color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: T.font }}
-                    >
-                      Reconnect Tidal
-                    </button>
-                  </div>
-                )}
+                <Guide guide={flowError} style={{ marginBottom: 16 }} />
+                <ReconnectBar
+                  flowError={flowError}
+                  showSpotify={showSpotifyReconnectTip && dest === "spotify"}
+                  showTidal={showTidalReconnectTip && (dest === "tidal" || source === "tidal")}
+                  onSpotify={() => { clearSpotifyAuthState(); disconnect("spotify"); setShowSpotifyReconnectTip(false); initiateSpotifyAuth(); }}
+                  onTidal={() => { clearTidalAuthState(); disconnect("tidal"); setShowTidalReconnectTip(false); initiateTidalAuth(); }}
+                />
 
                 {/* Summary cards */}
                 <div className="stats-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
@@ -1761,11 +1769,15 @@ export default function PlaylistTransferPro() {
                   </div>
                 )}
 
-                {previewNote && (
-                  <div style={{ marginBottom: 16, padding: 14, borderRadius: T.radiusSm, background: "#fbf6ee", border: `1px solid ${T.border}`, fontSize: 13, color: T.text, lineHeight: 1.5 }}>
-                    {previewNote}
-                  </div>
-                )}
+                <Guide guide={previewNote} style={{ marginBottom: 16 }} />
+                <Guide guide={flowError} style={{ marginBottom: 16 }} />
+                <ReconnectBar
+                  flowError={flowError}
+                  showSpotify={showSpotifyReconnectTip}
+                  showTidal={showTidalReconnectTip}
+                  onSpotify={() => { clearSpotifyAuthState(); disconnect("spotify"); setShowSpotifyReconnectTip(false); initiateSpotifyAuth(); }}
+                  onTidal={() => { clearTidalAuthState(); disconnect("tidal"); setShowTidalReconnectTip(false); initiateTidalAuth(); }}
+                />
 
                 {previewItems.length > 0 && (
                   <>
@@ -2189,9 +2201,10 @@ export default function PlaylistTransferPro() {
               <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Open a file</div>
               <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 14 }}>Upload a JSON or CSV file to import playlists into any platform</p>
               <input ref={fileInputRef} type="file" accept=".json,.csv" onChange={handleImport} style={{ display: "none" }} />
-              <button onClick={() => fileInputRef.current?.click()} className="btn-hover" style={{ background: T.surfaceHover, border: `2px dashed ${T.borderLight}`, borderRadius: T.radiusSm, padding: "24px 20px", color: T.textMuted, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font, width: "100%", transition: "all 0.2s ease" }}>
+              <button onClick={() => { setImportError(null); fileInputRef.current?.click(); }} className="btn-hover" style={{ background: T.surfaceHover, border: `2px dashed ${T.borderLight}`, borderRadius: T.radiusSm, padding: "24px 20px", color: T.textMuted, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: T.font, width: "100%", transition: "all 0.2s ease" }}>
                 Choose a JSON or CSV file
               </button>
+              <Guide guide={importError} style={{ marginTop: 12 }} />
 
               {importData && (
                 <div className="fade-up" style={{ marginTop: 16 }}>

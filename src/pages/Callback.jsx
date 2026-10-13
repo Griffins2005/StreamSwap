@@ -14,6 +14,7 @@ import { exchangeYouTubeCode } from '../lib/youtube';
 import { exchangeTidalCode } from '../lib/tidal';
 import { exchangeDeezerCode } from '../lib/deezer';
 import { readTokens, writeTokens } from '../lib/tokenStore';
+import { explainUserError } from '../lib/userErrors';
 
 const pageStyle = {
   minHeight: '100vh',
@@ -40,14 +41,12 @@ export default function Callback() {
       const errorParam = searchParams.get('error');
 
       if (errorParam) {
-        setError(`Authorization denied: ${errorParam}`);
-        setTimeout(() => navigate('/'), 3000);
+        setError(explainUserError(errorParam, { where: 'signin', platform }));
         return;
       }
 
       if (!code) {
-        setError('No authorization code received');
-        setTimeout(() => navigate('/'), 3000);
+        setError(explainUserError('access_denied', { where: 'signin', platform }));
         return;
       }
 
@@ -72,8 +71,7 @@ export default function Callback() {
         setStatus(`Connected to ${platformLabel}! Redirecting...`);
         setTimeout(() => navigate('/'), 500);
       } catch (err) {
-        setError(err.message);
-        setTimeout(() => navigate('/'), 4000);
+        setError(explainUserError(err, { where: 'signin', platform }));
       }
     }
 
@@ -100,10 +98,22 @@ export default function Callback() {
           </>
         ) : (
           <>
-            <p style={{ fontSize: 18, fontWeight: 700, color: '#8d534c', fontFamily: "'Fraunces', serif" }}>{error}</p>
-            <p style={{ fontSize: 14, color: '#6f675e', marginTop: 8 }}>
-              Redirecting back...
-            </p>
+            <p style={{ fontSize: 18, fontWeight: 700, color: '#8d534c', fontFamily: "'Fraunces', serif" }}>{error.title}</p>
+            {error.handles && <p style={{ fontSize: 14, color: '#6f675e', marginTop: 8, lineHeight: 1.5 }}>{error.handles}</p>}
+            {error.steps?.length > 0 && (
+              <ol style={{ textAlign: 'left', fontSize: 14, color: '#2c2824', lineHeight: 1.5, paddingLeft: 18, marginTop: 14 }}>
+                {error.steps.map((step) => (
+                  <li key={step} style={{ marginTop: 6 }}>{step}</li>
+                ))}
+              </ol>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate('/')}
+              style={{ marginTop: 18, background: '#3e6b5e', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
+            >
+              Back to StreamSwap
+            </button>
           </>
         )}
       </div>

@@ -247,8 +247,43 @@ export async function getSpotifyPlaylistById(accessToken, playlistId) {
     id: data.id,
     name: data.name,
     trackCount: data.tracks?.total ?? 0,
+    ownerId: data.owner?.id || null,
     platform: 'spotify',
   };
+}
+
+/**
+ * Add a playlist to the signed-in user's library without copying its songs.
+ * Spotify allows this for some playlists it will not let an app read.
+ * Returns true when the playlist is now followed.
+ */
+export async function followSpotifyPlaylist(accessToken, playlistId) {
+  const response = await fetchWithRetry(`${config.apiBase}/playlists/${playlistId}/followers`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ public: false }),
+  });
+  if (response.status === 401) throw new Error('TOKEN_EXPIRED');
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Spotify API error: ${response.status}`);
+  }
+  return true;
+}
+
+/**
+ * Create a private playlist on the signed-in account and add the given tracks.
+ * Returns { id, saved }. saved is how many track URIs Spotify accepted.
+ */
+export async function copySpotifyPlaylistToLibrary(accessToken, { name, tracks }) {
+  const me = await getSpotifyUserProfile(accessToken);
+  const id = await createSpotifyPlaylist(accessToken, me.id, name, 'Saved from a link via StreamSwap');
+  const uris = (tracks || []).map((track) => track.uri).filter(Boolean);
+  if (uris.length) await addTracksToSpotifyPlaylist(accessToken, id, uris);
+  return { id, saved: uris.length };
 }
 
 /**

@@ -255,6 +255,17 @@ export async function addTracksToDeezerPlaylist(accessToken, playlistId, trackId
 }
 
 /**
+ * Create a playlist on the signed-in Deezer account and add the given track ids.
+ * Returns { id, saved }.
+ */
+export async function copyDeezerPlaylistToLibrary(accessToken, { name, tracks }) {
+  const id = await createDeezerPlaylist(accessToken, name, 'Saved from a link via StreamSwap');
+  const ids = (tracks || []).map((track) => track.id).filter(Boolean);
+  if (ids.length) await addTracksToDeezerPlaylist(accessToken, id, ids);
+  return { id, saved: ids.length };
+}
+
+/**
  * Search for a track by title + artist. Returns { id, title, artist, confidence, method } or null.
  */
 export async function searchDeezerTrack(accessToken, title, artist, duration = 0) {
