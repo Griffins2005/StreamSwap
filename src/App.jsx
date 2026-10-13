@@ -1419,9 +1419,12 @@ export default function PlaylistTransferPro() {
 
         {/* ── HEADER ── */}
         <div className="header-row" style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 36, gap: 16 }}>
-          <div>
-            <h1 style={{ fontFamily: T.display, fontWeight: 560, fontSize: 32, letterSpacing: "-0.03em", lineHeight: 1 }}>StreamSwap</h1>
-            <p style={{ fontSize: 14, color: T.textMuted, fontWeight: 500, marginTop: 6 }}>Move your playlists, quietly.</p>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <img src="/favicon.svg" alt="" width="44" height="44" />
+            <div>
+              <h1 style={{ fontFamily: T.display, fontWeight: 560, fontSize: 32, letterSpacing: "-0.03em", lineHeight: 1 }}>StreamSwap</h1>
+              <p style={{ fontSize: 14, color: T.textMuted, fontWeight: 500, marginTop: 6 }}>Move your playlists, quietly.</p>
+            </div>
           </div>
 
           <nav style={{ display: "flex", gap: 6, background: T.paper, borderRadius: 999, padding: 4, border: `1px solid ${T.border}` }}>
