@@ -198,7 +198,44 @@ async function spotifyFetch(endpoint, accessToken, options = {}) {
     throw new Error(msg);
   }
 
-  return response.json();
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+/** Try the current Spotify path, then the older one if Spotify says that path is gone. */
+async function spotifyFetchFallback(paths, accessToken, options) {
+  let lastError;
+  for (let i = 0; i < paths.length; i++) {
+    try {
+      return await spotifyFetch(paths[i], accessToken, options);
+    } catch (err) {
+      lastError = err;
+      const msg = String(err?.message || '');
+      const missingPath = /\b404\b|not found/i.test(msg);
+      if (!missingPath || i === paths.length - 1) throw err;
+    }
+  }
+  throw lastError;
+}
+
+function trackFromPlaylistEntry(entry) {
+  const track = entry?.item || entry?.track;
+  if (!track || track.is_local || track.type === 'episode') return null;
+  return {
+    id: track.id,
+    title: track.name,
+    artist: (track.artists || []).map((a) => a.name).join(', '),
+    album: track.album?.name || '',
+    duration: Math.round((track.duration_ms || 0) / 1000),
+    isrc: track.external_ids?.isrc || null,
+    uri: track.uri,
+    platform: 'spotify',
+  };
 }
 
 // ─── Playlist operations ─────────────────────────────────────────────────────
@@ -219,12 +256,12 @@ export async function getSpotifyPlaylists(accessToken) {
   while (url) {
     const data = await spotifyFetch(url, accessToken);
     playlists.push(
-      ...data.items.map((pl) => ({
+      ...(data.items || []).map((pl) => ({
         id: pl.id,
         name: pl.name,
-        trackCount: pl.tracks.total,
+        trackCount: pl.items?.total ?? pl.tracks?.total ?? 0,
         image: pl.images?.[0]?.url || null,
-        owner: pl.owner.display_name,
+        owner: pl.owner?.display_name || '',
         public: pl.public,
         description: pl.description || '',
         uri: pl.uri,
@@ -246,7 +283,7 @@ export async function getSpotifyPlaylistById(accessToken, playlistId) {
   return {
     id: data.id,
     name: data.name,
-    trackCount: data.tracks?.total ?? 0,
+    trackCount: data.items?.total ?? data.tracks?.total ?? 0,
     ownerId: data.owner?.id || null,
     platform: 'spotify',
   };
@@ -258,6 +295,14 @@ export async function getSpotifyPlaylistById(accessToken, playlistId) {
  * Returns true when the playlist is now followed.
  */
 export async function followSpotifyPlaylist(accessToken, playlistId) {
+  const uri = `spotify:playlist:${playlistId}`;
+  try {
+    await spotifyFetch('/me/library?uris=' + encodeURIComponent(uri), accessToken, { method: 'PUT' });
+    return true;
+  } catch (err) {
+    const msg = String(err?.message || '');
+    if (!/\b404\b|not found/i.test(msg)) throw err;
+  }
   const response = await fetchWithRetry(`${config.apiBase}/playlists/${playlistId}/followers`, {
     method: 'PUT',
     headers: {
@@ -292,24 +337,23 @@ export async function copySpotifyPlaylistToLibrary(accessToken, { name, tracks }
  */
 export async function getSpotifyPlaylistTracks(accessToken, playlistId) {
   const tracks = [];
-  let url = `/playlists/${playlistId}/tracks?limit=100&fields=items(track(id,name,artists,album,duration_ms,external_ids,uri)),next`;
+  let url = `/playlists/${playlistId}/items?limit=50`;
 
   while (url) {
-    const data = await spotifyFetch(url, accessToken);
-    tracks.push(
-      ...data.items
-        .filter((item) => item.track && !item.track.is_local)
-        .map((item) => ({
-          id: item.track.id,
-          title: item.track.name,
-          artist: item.track.artists.map((a) => a.name).join(', '),
-          album: item.track.album?.name || '',
-          duration: Math.round(item.track.duration_ms / 1000),
-          isrc: item.track.external_ids?.isrc || null,
-          uri: item.track.uri,
-          platform: 'spotify',
-        }))
-    );
+    let data;
+    try {
+      data = await spotifyFetch(url, accessToken);
+    } catch (err) {
+      const msg = String(err?.message || '');
+      const canTryLegacy = url.includes('/items') && /\b404\b|not found/i.test(msg);
+      if (!canTryLegacy) throw err;
+      url = url.replace('/items?', '/tracks?');
+      data = await spotifyFetch(url, accessToken);
+    }
+    for (const entry of data.items || []) {
+      const track = trackFromPlaylistEntry(entry);
+      if (track?.id) tracks.push(track);
+    }
     url = data.next ? data.next.replace(config.apiBase, '') : null;
   }
 
@@ -318,14 +362,16 @@ export async function getSpotifyPlaylistTracks(accessToken, playlistId) {
 
 /** Create a new playlist. Returns playlist id. */
 export async function createSpotifyPlaylist(accessToken, userId, name, description = '') {
-  const data = await spotifyFetch(`/users/${userId}/playlists`, accessToken, {
-    method: 'POST',
-    body: JSON.stringify({
-      name,
-      description: description || `Transferred via StreamSwap`,
-      public: false,
-    }),
+  const body = JSON.stringify({
+    name,
+    description: description || `Transferred via StreamSwap`,
+    public: false,
   });
+  const data = await spotifyFetchFallback(
+    ['/me/playlists', userId ? `/users/${userId}/playlists` : null].filter(Boolean),
+    accessToken,
+    { method: 'POST', body }
+  );
 
   return data.id;
 }
@@ -334,10 +380,11 @@ export async function createSpotifyPlaylist(accessToken, userId, name, descripti
 export async function addTracksToSpotifyPlaylist(accessToken, playlistId, trackUris) {
   for (let i = 0; i < trackUris.length; i += 100) {
     const chunk = trackUris.slice(i, i + 100);
-    await spotifyFetch(`/playlists/${playlistId}/tracks`, accessToken, {
-      method: 'POST',
-      body: JSON.stringify({ uris: chunk }),
-    });
+    await spotifyFetchFallback(
+      [`/playlists/${playlistId}/items`, `/playlists/${playlistId}/tracks`],
+      accessToken,
+      { method: 'POST', body: JSON.stringify({ uris: chunk }) }
+    );
   }
 }
 
@@ -352,12 +399,13 @@ export async function searchSpotifyTrack(accessToken, title, artist, isrc = null
         `/search?q=isrc:${encodeURIComponent(isrc)}&type=track&limit=1`,
         accessToken
       );
-      if (data.tracks.items.length > 0) {
-        const t = data.tracks.items[0];
+      const found = data.tracks?.items || [];
+      if (found.length > 0) {
+        const t = found[0];
         return {
           id: t.id,
           title: t.name,
-          artist: t.artists.map((a) => a.name).join(', '),
+          artist: (t.artists || []).map((a) => a.name).join(', '),
           uri: t.uri,
           confidence: 1.0,
           method: 'ISRC',
@@ -374,12 +422,13 @@ export async function searchSpotifyTrack(accessToken, title, artist, isrc = null
     accessToken
   );
 
-  if (data.tracks.items.length === 0) return null;
+  const found = data.tracks?.items || [];
+  if (found.length === 0) return null;
 
-  const candidates = data.tracks.items.map((t) => ({
+  const candidates = found.map((t) => ({
     id: t.id,
     title: t.name,
-    artist: t.artists.map((a) => a.name).join(', '),
+    artist: (t.artists || []).map((a) => a.name).join(', '),
     album: t.album?.name || '',
     duration: Math.round((t.duration_ms || 0) / 1000),
     isrc: t.external_ids?.isrc || null,
