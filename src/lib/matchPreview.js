@@ -30,7 +30,7 @@ export function buildPreviewItem({ dest, key, playlistId, playlistName, playlist
     confidence,
     method,
     band,
-    included: band === 'found' || band === 'close',
+    included: band === 'found' || (band === 'close' && confidence >= 0.78),
   };
 }
 

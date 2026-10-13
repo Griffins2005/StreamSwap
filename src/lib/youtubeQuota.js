@@ -71,7 +71,7 @@ export function markYouTubeSearchExhausted() {
 }
 
 function cacheKey(title, artist) {
-  return `${normalizeString(title)}\n${normalizeString(artist)}`;
+  return `v2\n${normalizeString(title)}\n${normalizeString(artist)}`;
 }
 
 function readCache() {

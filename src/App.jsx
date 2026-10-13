@@ -241,7 +241,7 @@ function countLabel(n, singular, plural = `${singular}s`) {
 
 async function searchDestination(dest, token, track) {
   if (dest === "spotify") return searchSpotifyTrack(token, track.title, track.artist, track.isrc || null, track.duration || 0);
-  if (dest === "youtube") return searchYouTubeTrack(token, track.title, track.artist);
+  if (dest === "youtube") return searchYouTubeTrack(token, track.title, track.artist, track.duration || 0);
   if (dest === "tidal") return searchTidalTrack(token, track.title, track.artist, track.isrc || null, track.duration || 0);
   if (dest === "deezer") return searchDeezerTrack(token, track.title, track.artist, track.duration || 0);
   return null;
@@ -1175,7 +1175,7 @@ export default function PlaylistTransferPro() {
             } else if (checkpoint.matches?.[key]) {
               match = matchFromSaved(dest, checkpoint.matches[key]);
             } else if (dest === "spotify") match = await searchSpotifyTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
-            else if (dest === "youtube") match = await searchYouTubeTrack(destTokenRef.current, track.title, track.artist);
+            else if (dest === "youtube") match = await searchYouTubeTrack(destTokenRef.current, track.title, track.artist, track.duration || 0);
             else if (dest === "tidal") match = await searchTidalTrack(destTokenRef.current, track.title, track.artist, track.isrc || null, track.duration || 0);
             else if (dest === "deezer") match = await searchDeezerTrack(destTokenRef.current, track.title, track.artist, track.duration || 0);
             const confidence = match ? (match.confidence ?? 0) : 0;

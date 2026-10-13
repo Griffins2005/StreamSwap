@@ -18,6 +18,8 @@ export function normalizeString(str) {
   if (str == null) return '';
   return String(str)
     .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .replace(/\(feat\.?[^)]*\)/gi, '')
     .replace(/\(ft\.?[^)]*\)/gi, '')
     .replace(/\(with\s[^)]*\)/gi, '')
@@ -27,6 +29,16 @@ export function normalizeString(str) {
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Channel names like "Sona Jobarteh - Topic" should compare as the artist. */
+export function normalizeArtist(str) {
+  return normalizeString(
+    String(str || '')
+      .replace(/\s*-\s*topic\b/gi, '')
+      .replace(/\s+vevo\b/gi, '')
+      .replace(/\s+official\b/gi, '')
+  );
 }
 
 /**
@@ -84,6 +96,28 @@ export function durationMatch(durA, durB, toleranceSec = 5) {
   return Math.abs(durA - durB) <= toleranceSec;
 }
 
+function durationAdjustment(durA, durB) {
+  if (!durA || !durB) return 0.05;
+  const diff = Math.abs(durA - durB);
+  if (diff <= 8) return 0.1;
+  if (diff <= 20) return 0.04;
+  const ratio = Math.min(durA, durB) / Math.max(durA, durB);
+  if (ratio < 0.55) return -0.32;
+  if (diff <= 45) return 0.02;
+  return -0.1;
+}
+
+function artistSimilarity(a, b) {
+  const na = normalizeArtist(a);
+  const nb = normalizeArtist(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const shorter = Math.min(na.length, nb.length);
+  const longer = Math.max(na.length, nb.length);
+  if (shorter >= 4 && (na.includes(nb) || nb.includes(na)) && shorter / longer >= 0.45) return 0.92;
+  return 1 - levenshteinDistance(na, nb) / longer;
+}
+
 /**
  * Match a single track against a catalog of destination tracks.
  *
@@ -110,18 +144,10 @@ export function matchTrack(track, catalog) {
 
   for (const candidate of catalog) {
     const titleSim = stringSimilarity(track.title, candidate.title);
-    const artistSim = stringSimilarity(track.artist, candidate.artist);
+    const artistSim = artistSimilarity(track.artist, candidate.artist);
 
     // Weighted combination: title matters more
-    let combined = titleSim * 0.55 + artistSim * 0.35;
-
-    // Duration bonus/penalty
-    if (track.duration && candidate.duration) {
-      const durOk = durationMatch(track.duration, candidate.duration);
-      combined += durOk ? 0.1 : -0.05;
-    } else {
-      combined += 0.05; // Neutral
-    }
+    let combined = titleSim * 0.55 + artistSim * 0.35 + durationAdjustment(track.duration, candidate.duration);
 
     if (combined > bestScore) {
       bestScore = combined;

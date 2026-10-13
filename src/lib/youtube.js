@@ -441,8 +441,46 @@ export async function addTracksToYouTubePlaylist(accessToken, playlistId, videoI
  * Search for a music video by title + artist. Uses category 10 (Music) to bias results.
  * Returns { id, videoId, title, artist, confidence, method } or null.
  */
-export async function searchYouTubeTrack(accessToken, title, artist) {
-  const q = [title, artist].filter(Boolean).join(' ');
+function searchText(title, artist) {
+  const cleanTitle = String(title || '')
+    .replace(/\(feat\.?[^)]*\)/gi, '')
+    .replace(/\(ft\.?[^)]*\)/gi, '')
+    .replace(/\[.*?\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const primary = String(artist || '').split(/\s*,\s*|\s+&\s+|\s+feat\.?\s+|\s+ft\.?\s+/i)[0].trim();
+  return [cleanTitle, primary].filter(Boolean).join(' ');
+}
+
+function parseIsoDuration(iso) {
+  const match = String(iso || '').match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  return (Number(match[1]) || 0) * 3600 + (Number(match[2]) || 0) * 60 + (Number(match[3]) || 0);
+}
+
+async function videoDurations(accessToken, videoIds) {
+  if (!videoIds.length) return {};
+  try {
+    const url = new URL(`${config.apiBase}/videos`);
+    url.searchParams.set('part', 'contentDetails');
+    url.searchParams.set('id', videoIds.join(','));
+    const response = await fetchWithRetry(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) return {};
+    const data = await response.json();
+    const durations = {};
+    for (const item of data.items || []) {
+      durations[item.id] = parseIsoDuration(item.contentDetails?.duration);
+    }
+    return durations;
+  } catch {
+    return {};
+  }
+}
+
+export async function searchYouTubeTrack(accessToken, title, artist, duration = 0) {
+  const q = searchText(title, artist);
   if (!q.trim()) return null;
 
   const cached = lookupYouTubeMatch(title, artist);
@@ -474,7 +512,10 @@ export async function searchYouTubeTrack(accessToken, title, artist) {
     })
     .filter(Boolean);
 
-  const best = pickBestCandidate({ title, artist, duration: 0, isrc: null }, candidates);
+  const durations = await videoDurations(accessToken, candidates.map((c) => c.videoId));
+  for (const candidate of candidates) candidate.duration = durations[candidate.videoId] || 0;
+
+  const best = pickBestCandidate({ title, artist, duration: duration || 0, isrc: null }, candidates);
   rememberYouTubeMatch(title, artist, best);
   return best;
 }
